@@ -1,4 +1,4 @@
-.PHONY: install format lint typecheck test build compose-validate up down logs seed seed-pacs
+.PHONY: install format lint typecheck test test-integration build compose-validate up down logs seed seed-pacs
 
 install:
 	cd backend && env -u PYTHONPATH uv sync --group dev
@@ -19,6 +19,11 @@ typecheck:
 test:
 	cd backend && env -u PYTHONPATH uv run pytest -q
 	cd frontend && npx --yes pnpm@10.14.0 test
+
+test-integration:
+	docker compose up -d --build postgres redis orthanc-source orthanc-destination backend
+	docker compose exec -T backend python -m app.pacs.seed_dicom
+	docker compose exec -T backend python -m app.pacs.connected_smoke
 
 build:
 	cd frontend && npx --yes pnpm@10.14.0 build

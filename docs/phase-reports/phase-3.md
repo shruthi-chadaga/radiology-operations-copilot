@@ -1,7 +1,7 @@
 # Phase 3 Report — PACS/RIS Foundation and Transfers
 
-**Date:** 2026-07-19
-**Status:** Implemented; post-review checkpoint gates and connected migration verification passed, awaiting commit
+**Date:** 2026-07-25
+**Status:** Complete; checkpoint committed and reproducible connected PACS gate added
 
 ## Delivered
 
@@ -24,12 +24,15 @@ Session work followed RED–GREEN for these behaviors, but the repository cannot
 
 Current checkpoint quality gate:
 
-- Backend: **60 tests passed**.
+- Backend test suite: passed.
 - Ruff format/check: passed.
-- mypy: passed for **53 source files**.
+- mypy: passed.
 - Alembic: a genuinely empty PostgreSQL database migrated cleanly through `0008`.
 - Frontend: **9 tests passed**, TypeScript passed, ESLint passed, and production build passed.
 - `docker compose config --quiet`: passed; all nine services rendered.
+- `make test-integration`: starts the required containers, idempotently seeds only
+  conspicuously synthetic DICOM, and verifies both Orthanc nodes plus metadata-only
+  inventories through the real typed adapters.
 
 ## Safety decisions
 
@@ -57,6 +60,9 @@ Current checkpoint quality gate:
 - The durable PostgreSQL dispatch row was published, Celery executed exactly one attempt, and explicit reconciliation advanced the transfer from `transferred` to `completed`.
 - MailHog captured a synthetic-only SMTP smoke message without external delivery.
 - Authenticated browser smoke on the configured `localhost` origin displayed both healthy PACS nodes, instance-counted synthetic inventory, and transfer history.
+- The reproducible `make test-integration` gate rebuilt the backend, idempotently seeded
+  five source objects, verified both real Orthanc nodes, read 5 source and 2 destination
+  studies, and validated all returned records as metadata-only synthetic data.
 
 One earlier historical row recorded a false `0/0 matched` outcome before count parsing was fixed. It is preserved as immutable historical evidence and is explicitly excluded from acceptance evidence; only the positive `1/1 matched` row above is valid.
 
@@ -68,3 +74,7 @@ One earlier historical row recorded a false `0/0 matched` outcome before count p
 - The static header no longer claims the false role `demo viewer`; it accurately states that backend RBAC is active while the backend remains authoritative.
 - Required credentials now come from operator-supplied environment values; Orthanc authentication was verified after rotation, and existing seeded-user password hashes reconcile without data reset.
 - Compose separates edge, data, queue, PACS, and mail traffic; PostgreSQL and Redis have no host-published ports.
+- The connected gate exposed a deterministic-seed contract mismatch: generated accessions
+  use the specific `ACC-SP-*` prefix while validation previously required literal `SYN`.
+  Validation now accepts that exact seed prefix while retaining required `SYN-*` patient IDs
+  and `synthetic` study descriptions; arbitrary accession values remain rejected.

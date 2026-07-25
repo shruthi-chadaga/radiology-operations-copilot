@@ -15,11 +15,12 @@ class UnsafePacsMetadata(ValueError):
     """Raised when Orthanc metadata is not conspicuously synthetic."""
 
 
-def _validate_synthetic_metadata(metadata: PacsStudyMetadata) -> None:
+def validate_synthetic_metadata(metadata: PacsStudyMetadata) -> None:
     description = (metadata.study_description or "").lower()
+    accession = metadata.accession_number.upper()
     if (
         not metadata.patient_id.upper().startswith("SYN-")
-        or "SYN" not in metadata.accession_number.upper()
+        or ("SYN" not in accession and not accession.startswith("ACC-SP-"))
         or "synthetic" not in description
     ):
         raise UnsafePacsMetadata(
@@ -63,7 +64,7 @@ def check_node_health(
 def sync_inventory(session: Session, node: PacsNode, adapter: PacsAdapter, *, actor_id: str) -> int:
     studies = adapter.list_studies()
     for metadata in studies:
-        _validate_synthetic_metadata(metadata)
+        validate_synthetic_metadata(metadata)
     now = datetime.now(UTC)
     for metadata in studies:
         study = session.scalar(
