@@ -76,7 +76,7 @@ Use SQLAlchemy 2.x and Alembic. UUID primary keys are application generated. Tim
 
 ### Background work
 
-Celery tasks receive entity IDs and idempotency keys, not ORM objects or free-form executable instructions. Tasks re-load current policy and entity state before action. Beat health/inventory tasks tolerate Orthanc unavailability.
+Celery tasks receive entity IDs and idempotency keys, not ORM objects or free-form executable instructions. Phase 3 transfer tasks re-load entity state and execute with automatic retries disabled; current-policy reload and policy-driven retry eligibility are Phase 4 target controls. Beat health/inventory tasks tolerate Orthanc unavailability.
 
 ### AI
 
@@ -112,4 +112,4 @@ Celery tasks receive entity IDs and idempotency keys, not ORM objects or free-fo
 
 ## Verification
 
-The decision is satisfied only when `docker compose up --build` starts the complete stack; health checks pass; seeded users can log in; both tabs render; PostgreSQL/Redis/Celery/Orthanc/MailHog integrations are exercised; safety and authorization tests pass; and the connected demo produces a complete audit timeline.
+This is the target acceptance condition, not a claim that every later-phase workflow exists. The decision is fully satisfied only when `docker compose up --build` starts the complete stack; health checks pass; seeded users can log in; both tabs render; PostgreSQL/Redis/Celery/Orthanc/MailHog integrations are exercised; safety and authorization tests pass; and the eventual connected demo produces its intended audit timeline. Phase reports record the narrower evidence available at each checkpoint.

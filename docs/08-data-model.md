@@ -1,12 +1,16 @@
 # Relational Data Model
 
-PostgreSQL is the system of record. IDs are UUIDs, timestamps are timezone-aware UTC, and mutable workflow tables carry `created_at`/`updated_at`. Foreign keys use restrictive deletion by default. The application exposes no destructive DICOM or audit operation.
+PostgreSQL is the system of record. IDs are UUIDs and timestamps are timezone-aware UTC where present. Timestamp columns vary by implemented table; migrations are authoritative. Foreign keys use restrictive deletion by default. The application exposes no destructive DICOM or audit operation.
+
+## Implementation status
+
+This document includes both the implemented Phase 1–3 schema and later-phase target state. The following rows are **planned and not present** at this checkpoint: `refresh_sessions`, `automation_policies`, `idempotency_records`, `preparation_templates`, `waitlist_entries`, `patient_communications`, `pacs_events`, `pacs_incidents`, and `remediation_actions`. Constraints described for those rows are likewise target-state only. Current migrations through `0008_transfer_dispatch_outbox` are authoritative for implemented tables and indexes.
 
 ## Shared and identity
 
 | Table | Important columns | Constraints / indexes |
 |---|---|---|
-| `users` | `id`, `email`, `display_name`, `password_hash`, `role`, `is_active` | unique lower-case email; role enum; no public sign-up |
+| `users` | `id`, `email`, `display_name`, `password_hash`, `role`, `is_active` | case-sensitive unique email index; role enum; no public sign-up |
 | `refresh_sessions` | `id`, `user_id`, `token_hash`, `expires_at`, `revoked_at` | token hash unique; index on user/expiry |
 | `audit_events` | `id`, `timestamp`, `actor_type`, `actor_id`, `action`, `entity_type`, `entity_id`, `before_state`, `after_state`, `decision_reason`, `policy_version`, `model_name`, `prompt_version`, `correlation_id`, `request_id`, `source_ip`, `success`, `error_code`, `error_message` | append-only in service/API; indexes on time, entity, correlation, action |
 | `exception_cases` | `id`, `exception_number`, `domain`, `category`, `severity`, `status`, `title`, `description`, `source_entity_type`, `source_entity_id`, `assigned_role`, `assigned_user_id`, `confidence`, `suggested_action`, `due_at`, `resolved_at`, `resolution` | exception number unique; domain/status/severity indexes |
@@ -19,12 +23,12 @@ PostgreSQL is the system of record. IDs are UUIDs, timestamps are timezone-aware
 |---|---|
 | `synthetic_patients` | unique `external_patient_id`; all records marked `synthetic=true`; fictional contact fields |
 | `referrals` | FK patient; unique `referral_number`; unchanged `source_text`; modality/status/completeness enums; confidence 0..1 |
-| `referral_field_extractions` | FK referral; one current row per referral/field/prompt version; original extracted value and accepted correction remain distinct |
+| `referral_field_extractions` | FK referral; one current row per referral/field; model/prompt identify the current extraction, audit events preserve prior runs, and original extracted value remains distinct from an accepted correction |
 | `locations` | unique `code`; IANA timezone; active flag |
 | `preparation_templates` | versioned deterministic message template; no clinical advice generation |
-| `imaging_services` | FK location and optional preparation template; unique code/location; duration > 0 |
+| `imaging_services` | FK location; globally unique code; duration stored as a required integer (positive-duration DB check is target-state) |
 | `schedules` | FK service/location; valid date range |
-| `slots` | FK schedule; start < end; status enum; capacity > 0; integer `version`; unique schedule/start/end |
+| `slots` | FK schedule; status enum; required capacity and integer `version`; start/end and positive-capacity DB checks are target-state |
 | `appointments` | FK patient/referral/slot/service; unique appointment and accession numbers; partial unique active appointment per referral; cancellation history preserved |
 | `appointment_history` | immutable transition rows with actor, prior/new state, reason, timestamp |
 | `imaging_orders` | one-to-one appointment; unique accession; procedure/modality/scheduled time |
@@ -52,7 +56,7 @@ No network call occurs while the row lock is held. Communication is queued after
 | `pacs_nodes` | unique name/node type; base URL and DICOM endpoint; no credentials stored in row; last health status/time |
 | `pacs_health_checks` | FK node; status, latency, HTTP evidence, redacted error, checked time |
 | `pacs_studies` | FK node; unique `(node_id, orthanc_study_id)` and indexed study UID/accession/patient ID; normalized metadata JSON only, no pixels |
-| `transfer_jobs` | FK source/destination/study; status, retry count/max, correlation and idempotency key; unique idempotency key |
+| `transfer_jobs` | FK source/destination/study; immutable UID/accession/patient/count intent snapshot; status, retry count/max, correlation and idempotency key; unique idempotency key |
 | `transfer_attempts` | FK transfer; attempt number, timestamps, redacted request/response evidence, outcome; unique transfer/attempt |
 | `pacs_events` | FKs to nodes/study/transfer; typed evidence and processing state |
 | `pacs_incidents` | unique incident number; FK source event/study/transfer/owner; constrained category/severity/status/approval state |
@@ -61,10 +65,10 @@ No network call occurs while the row lock is held. Communication is queued after
 
 ### Transfer and retry invariants
 
-- `retry_count <= maximum_retries`; default maximum automatic retries is one.
-- Automatic retry is eligible only for deterministic connectivity/transient categories, enabled policy, sufficient confidence, global kill switch off, and healthy destination.
+- Phase 3 stores `retry_count` and `maximum_retries` but has no database check for their relationship; the Celery task disables automatic retries.
+- Connectivity categories, confidence thresholds, a global kill switch, and destination-health retry eligibility are Phase 4 target policy controls, not current transfer invariants.
 - Identity mismatch, unknown, duplicate, authorization, security/configuration, and non-allowlisted cases cannot execute automatically.
-- Reconciliation closes a transfer only after destination presence and identifier/count checks succeed.
+- Reconciliation closes a transfer only after both nodes match the immutable transfer intent and positive identifier/count checks succeed.
 - No table or service contains pixel content or a method for deletion/tag modification.
 
 ## Relationship overview

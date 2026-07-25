@@ -107,6 +107,6 @@ make demo-reset
 make demo
 ```
 
-## Known environment gate
+## Local environment status
 
-At planning time, `git`, Node.js, and `uv` are available, while Docker and pnpm are not on the current Git Bash `PATH`. Code-level tests may proceed after pnpm enablement, but real Compose/Orthanc/MailHog verification requires Docker Desktop/Engine availability and must not be reported as passed until exercised.
+Docker Desktop 4.82.0, Docker Engine/CLI 29.6.1, Compose 5.3.0, Node.js, pnpm, `uv`, and WSL 2.7.10 are installed. The post-install restart completed, Docker's Linux engine is available, all nine Compose services start, and the connected Phase 3 Orthanc transfer gate passes.

@@ -1,6 +1,40 @@
-# API Endpoint Definitions
+# API Contract and Target-State Definitions
 
-Base path: `/api/v1`. JSON uses RFC 3339 timestamps and UUID strings. Errors use `{ "code", "message", "details", "request_id" }`. Mutating requests accept/return correlation IDs; retry/external-action requests require `Idempotency-Key`. Authentication is an HttpOnly cookie plus CSRF protection for state-changing browser requests.
+Base path: `/api/v1`. The generated OpenAPI document is authoritative for the current implementation. Current FastAPI errors use the standard `{ "detail": ... }` shape. Authentication uses an HttpOnly SameSite cookie; unsafe cookie-authenticated protected requests require an exact configured `Origin`. Public login does not apply the protected-route Origin dependency and is limited per source address using persisted audit failures.
+
+## Implemented through the Phase 1–3 checkpoint
+
+The current OpenAPI surface contains these 24 method/path pairs:
+
+```text
+GET  /health/live
+POST /auth/login
+POST /auth/logout
+GET  /auth/me
+GET  /audit
+GET|POST /referrals
+GET  /referrals/{referral_id}
+POST /referrals/{referral_id}/extract
+POST /referrals/{referral_id}/validate
+POST /referrals/{referral_id}/slot-recommendations
+POST /appointments
+POST /appointments/{appointment_id}/cancel
+POST /appointments/{appointment_id}/reschedule
+GET  /pacs/nodes
+GET  /pacs/nodes/{node_id}/health
+POST /pacs/nodes/{node_id}/health-check
+GET|POST /pacs/studies (POST is `/pacs/studies/sync`)
+GET  /pacs/studies/{study_id}
+GET|POST /pacs/transfers
+GET  /pacs/transfers/{transfer_id}
+POST /pacs/transfers/{transfer_id}/reconcile
+```
+
+List endpoints currently return bounded `items` collections without cursor, sort, or filter contracts. Transfer creation requires `Idempotency-Key`. There is no refresh-session endpoint in the checkpoint.
+
+## Target-state backlog (not implemented unless listed above)
+
+The remaining tables and rules below define the intended later-phase API. They are design targets, not claims about the current OpenAPI surface.
 
 ## Common rules
 
@@ -19,7 +53,7 @@ Base path: `/api/v1`. JSON uses RFC 3339 timestamps and UUID strings. Errors use
 | GET | `/health/worker` | authenticated | Bounded worker status |
 | POST | `/auth/login` | public/rate-limited | Validate seeded account; set session cookies; audit outcome |
 | POST | `/auth/refresh` | session | Rotate refresh session |
-| POST | `/auth/logout` | authenticated | Revoke session; clear cookies; audit |
+| POST | `/auth/logout` | authenticated | Clear the stateless access-token cookie and audit; server-side token revocation is not implemented |
 | GET | `/auth/me` | authenticated | Current user and permissions |
 
 ## Scheduling
@@ -55,12 +89,12 @@ Conflict behavior: booking/rescheduling returns `409 SLOT_CONFLICT` or `409 ACTI
 | POST | `/pacs/nodes/{id}/health-check` | new bounded check | pacs_admin, manager |
 | GET | `/pacs/studies` | normalized metadata page | pacs_admin, manager, auditor(read) |
 | GET | `/pacs/studies/{id}` | metadata only; never pixels | pacs_admin, manager, auditor(read) |
-| POST | `/pacs/studies/sync` | enqueue inventory sync | pacs_admin, manager |
+| POST | `/pacs/studies/sync` | run bounded metadata-only inventory sync | pacs_admin, manager |
 | POST | `/pacs/transfers` | source/destination/study → idempotent transfer job | pacs_admin, manager |
 | GET | `/pacs/transfers` | filtered jobs | pacs_admin, manager, auditor(read) |
 | GET | `/pacs/transfers/{id}` | attempts/evidence/reconciliation | pacs_admin, manager, auditor(read) |
 | POST | `/pacs/transfers/{id}/retry` | approval reference → policy decision/task | pacs_admin, manager |
-| POST | `/pacs/transfers/{id}/reconcile` | compare source/destination metadata | pacs_admin, manager |
+| POST | `/pacs/transfers/{id}/reconcile` | compare source/destination metadata and return identifier plus observed instance-count evidence | pacs_admin, manager |
 | GET | `/pacs/incidents` | filtered incidents | pacs_admin, manager, auditor(read) |
 | GET | `/pacs/incidents/{id}` | evidence/classification/policy/actions/timeline | pacs_admin, manager, auditor(read) |
 | POST | `/pacs/incidents/{id}/classify` | evidence → validated taxonomy result | pacs_admin, manager |

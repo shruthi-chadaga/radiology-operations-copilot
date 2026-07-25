@@ -1,0 +1,170 @@
+name: radiology-operations-copilot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-radiology_ops}
+      POSTGRES_USER: ${POSTGRES_USER:-radiology_ops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your local environment}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-radiology_ops} -d ${POSTGRES_DB:-radiology_ops}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [data]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [queue]
+
+  backend:
+    build: ./backend
+    environment: &backend-environment
+      APP_ENV: ${APP_ENV:-local}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      BACKEND_URL: ${BACKEND_URL:-http://localhost:8000}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-radiology_ops}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your local environment}@postgres:5432/${POSTGRES_DB:-radiology_ops}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in your local environment}
+      ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-30}
+      REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-7}
+      LOGIN_RATE_LIMIT_ATTEMPTS: ${LOGIN_RATE_LIMIT_ATTEMPTS:-5}
+      LOGIN_RATE_LIMIT_WINDOW_SECONDS: ${LOGIN_RATE_LIMIT_WINDOW_SECONDS:-60}
+      SCHEDULER_DEMO_PASSWORD: ${SCHEDULER_DEMO_PASSWORD:?Set SCHEDULER_DEMO_PASSWORD in your local environment}
+      PACS_ADMIN_DEMO_PASSWORD: ${PACS_ADMIN_DEMO_PASSWORD:?Set PACS_ADMIN_DEMO_PASSWORD in your local environment}
+      OPERATIONS_MANAGER_DEMO_PASSWORD: ${OPERATIONS_MANAGER_DEMO_PASSWORD:?Set OPERATIONS_MANAGER_DEMO_PASSWORD in your local environment}
+      AUDITOR_DEMO_PASSWORD: ${AUDITOR_DEMO_PASSWORD:?Set AUDITOR_DEMO_PASSWORD in your local environment}
+      SYSTEM_ADMIN_DEMO_PASSWORD: ${SYSTEM_ADMIN_DEMO_PASSWORD:?Set SYSTEM_ADMIN_DEMO_PASSWORD in your local environment}
+      AI_MOCK_MODE: ${AI_MOCK_MODE:-true}
+      ENABLE_AUTO_RETRY: ${ENABLE_AUTO_RETRY:-false}
+      MAX_AUTO_RETRIES: ${MAX_AUTO_RETRIES:-1}
+      LOW_CONFIDENCE_THRESHOLD: ${LOW_CONFIDENCE_THRESHOLD:-0.80}
+      ORTHANC_SOURCE_URL: http://orthanc-source:8042
+      ORTHANC_SOURCE_USERNAME: ${ORTHANC_SOURCE_USERNAME:-source_admin}
+      ORTHANC_SOURCE_PASSWORD: ${ORTHANC_SOURCE_PASSWORD:?Set ORTHANC_SOURCE_PASSWORD in your local environment}
+      ORTHANC_DESTINATION_URL: http://orthanc-destination:8042
+      ORTHANC_DESTINATION_USERNAME: ${ORTHANC_DESTINATION_USERNAME:-destination_admin}
+      ORTHANC_DESTINATION_PASSWORD: ${ORTHANC_DESTINATION_PASSWORD:?Set ORTHANC_DESTINATION_PASSWORD in your local environment}
+      ORTHANC_DESTINATION_PEER_NAME: destination
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
+    command: ["sh", "-c", "alembic upgrade head && python -m app.db.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health/live', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [edge, data, queue, pacs, mail]
+
+  worker:
+    build: ./backend
+    environment: *backend-environment
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [data, queue, pacs]
+
+  beat:
+    build: ./backend
+    environment: *backend-environment
+    command:
+      [
+        "celery",
+        "-A",
+        "app.workers.celery_app:celery_app",
+        "beat",
+        "--loglevel=INFO",
+        "--schedule=/tmp/celerybeat-schedule",
+      ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [data, queue]
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NEXT_TELEMETRY_DISABLED: "1"
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [edge]
+
+  orthanc-source:
+    image: orthancteam/orthanc:26.6.1
+    ports:
+      - "127.0.0.1:8042:8042"
+      - "127.0.0.1:4242:4242"
+    volumes:
+      - ./orthanc/source/orthanc.json:/etc/orthanc/orthanc.json:ro
+      - orthanc_source_data:/var/lib/orthanc/db
+    environment:
+      ORTHANC__REGISTERED_USERS: '{"${ORTHANC_SOURCE_USERNAME:-source_admin}":"${ORTHANC_SOURCE_PASSWORD:?Set ORTHANC_SOURCE_PASSWORD in your local environment}"}'
+    networks: [pacs]
+
+  orthanc-destination:
+    image: orthancteam/orthanc:26.6.1
+    ports:
+      - "127.0.0.1:8043:8042"
+      - "127.0.0.1:4243:4242"
+    volumes:
+      - ./orthanc/destination/orthanc.json:/etc/orthanc/orthanc.json:ro
+      - orthanc_destination_data:/var/lib/orthanc/db
+    environment:
+      ORTHANC__REGISTERED_USERS: '{"${ORTHANC_DESTINATION_USERNAME:-destination_admin}":"${ORTHANC_DESTINATION_PASSWORD:?Set ORTHANC_DESTINATION_PASSWORD in your local environment}"}'
+    networks: [pacs]
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    ports:
+      - "127.0.0.1:8025:8025"
+    networks: [mail]
+
+networks:
+  edge:
+    driver: bridge
+  data:
+    driver: bridge
+    internal: true
+  queue:
+    driver: bridge
+    internal: true
+  pacs:
+    driver: bridge
+  mail:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  orthanc_source_data:
+  orthanc_destination_data:

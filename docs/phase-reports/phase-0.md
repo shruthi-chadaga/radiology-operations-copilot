@@ -36,9 +36,9 @@
 
 Documentation artifacts were checked for required deliverables and explicit safety statements. No application production code was written in Phase 0.
 
-## Remaining risks / environment blockers
+## Historical Phase 0 risks / environment blockers
 
-- Docker is not currently available on Git Bash `PATH`, so Docker Compose, Orthanc, PostgreSQL, Redis, Celery, and MailHog cannot yet be executed or verified.
-- pnpm is not currently available; Node.js is available and Corepack may be used to activate pnpm.
+- At the Phase 0 checkpoint, Docker was not available on Git Bash `PATH`, so connected services had not yet been executed. This was resolved and superseded by the connected Phase 3 evidence.
+- At the Phase 0 checkpoint, pnpm was not available. Later checkpoints use pnpm successfully; this item is historical.
 - The final authentication cookie/CSRF mechanism and local port exposure require implementation tests.
 - Audit append-only behavior is an application-level control until database permissions/triggers are evaluated in hardening.

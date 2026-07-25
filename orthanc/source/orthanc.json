@@ -1,0 +1,15 @@
+{
+  "Name": "Radiology Copilot Source PACS",
+  "DicomAet": "SOURCE_PACS",
+  "DicomPort": 4242,
+  "HttpPort": 8042,
+  "RemoteAccessAllowed": true,
+  "AuthenticationEnabled": true,
+  "RegisteredUsers": {},
+  "DicomModalities": {
+    "destination": ["DEST_PACS", "orthanc-destination", 4242]
+  },
+  "OverwriteInstances": false,
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "StableAge": 2
+}
