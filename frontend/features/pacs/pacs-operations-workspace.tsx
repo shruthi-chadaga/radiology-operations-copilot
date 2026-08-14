@@ -156,6 +156,19 @@ export function PacsOperationsWorkspace({
     (study) => study.id === selectedTransferStudyId,
   );
 
+  useEffect(() => {
+    const explicitStudy = preselectedStudyId
+      ? displayStudies.find((study) => study.id === preselectedStudyId)
+      : undefined;
+    setSelectedTransferStudyId((currentStudyId) => {
+      if (explicitStudy) return explicitStudy.id;
+      if (displayStudies.some((study) => study.id === currentStudyId)) {
+        return currentStudyId;
+      }
+      return displayStudies[0]?.id ?? "";
+    });
+  }, [displayStudies, preselectedStudyId]);
+
   async function loadAll() {
     try {
       const responses = await Promise.all(

@@ -73,6 +73,30 @@ const acceptedTransfer = {
 };
 
 describe("PacsOperationsWorkspace transfer form", () => {
+  it("adopts a late explicit preselection when embedded studies arrive", () => {
+    const { rerender } = render(
+      <PacsOperationsWorkspace embedded nodes={nodes} studies={[]} canWrite />,
+    );
+
+    const studySelect = screen.getByRole("combobox", {
+      name: "Synthetic study",
+    });
+    rerender(
+      <PacsOperationsWorkspace
+        embedded
+        nodes={nodes}
+        studies={studies}
+        canWrite
+        preselectedStudyId="study-second-uuid"
+      />,
+    );
+
+    expect(studySelect).toHaveValue("study-second-uuid");
+    expect(
+      screen.getByText("Selected synthetic study: ACC-SECOND"),
+    ).toBeInTheDocument();
+  });
+
   it("preselects and submits the study UUID rather than an accession or another study", async () => {
     const fetchMock = vi
       .fn()
