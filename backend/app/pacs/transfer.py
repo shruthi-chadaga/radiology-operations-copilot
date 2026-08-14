@@ -139,7 +139,20 @@ def _recover_transfer_finalization(
     attempt.outcome = outcome
     attempt.redacted_error = redacted_error
     attempt.completed_at = datetime.now(UTC)
+    recovery_error_code = error_code or job.last_error_code or "FINALIZATION_UNAVAILABLE"
+    recovery_error = redacted_error or "redacted transfer failure"
     try:
+        if outcome == "failed":
+            enqueue_incident_persistence(
+                session,
+                job,
+                error_code=recovery_error_code,
+                redacted_error=recovery_error,
+                evidence={
+                    "attempt_number": attempt_number,
+                    "recovery": "transfer_finalization",
+                },
+            )
         append_audit_event(
             session,
             actor=AuditActor("system", actor_id),
@@ -156,15 +169,14 @@ def _recover_transfer_finalization(
                 "status": job.status.value,
                 "outcome": outcome,
             },
-            error_code=error_code or "FINALIZATION_UNAVAILABLE",
+            error_code=recovery_error_code,
         )
         session.commit()
     except Exception as audit_error:
         session.rollback()
         job = session.scalar(select(TransferJob).where(TransferJob.id == transfer_id))
         attempt = session.scalar(
-            select(TransferAttempt)
-            .where(
+            select(TransferAttempt).where(
                 TransferAttempt.transfer_job_id == transfer_id,
                 TransferAttempt.attempt_number == attempt_number,
             )
@@ -176,6 +188,17 @@ def _recover_transfer_finalization(
         attempt.outcome = outcome
         attempt.redacted_error = redacted_error
         attempt.completed_at = datetime.now(UTC)
+        if outcome == "failed":
+            enqueue_incident_persistence(
+                session,
+                job,
+                error_code=error_code or "FINALIZATION_AUDIT_UNAVAILABLE",
+                redacted_error=redacted_error or "redacted transfer failure",
+                evidence={
+                    "attempt_number": attempt_number,
+                    "recovery": "transfer_finalization_audit",
+                },
+            )
         session.commit()
     return job
 
