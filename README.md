@@ -1,13 +1,15 @@
 # Radiology Operations Copilot
 
-Radiology Operations Copilot is a synthetic, local-first portfolio prototype for routine radiology scheduling and imaging-operations tasks. The implemented Phase 1–3 checkpoint combines deterministic workflow rules, strict AI-assisted referral extraction, real local Orthanc PACS interactions, human exception handling, and operational audit evidence. Incident classification and remediation are Phase 4 target-state work, not current capabilities.
+Radiology Operations Copilot is a synthetic, local-first portfolio prototype for radiology scheduling and imaging workflow operations. The primary product experience is now an Imaging Workspace for finding and reviewing synthetic studies; Scheduling Automation remains a separate first-class workflow. The implemented checkpoint combines deterministic workflow rules, strict AI-assisted referral extraction, real local Orthanc PACS interactions, human exception handling, and operational audit evidence. See `docs/imaging-workspace-pivot.md` for the product direction.
 
 > **Safety statement:** This application is a synthetic portfolio prototype for healthcare operations workflow demonstration. It is not a production clinical system, medical device, diagnostic tool, or substitute for qualified healthcare and technical professionals. Do not enter real patient information.
 
 ## Primary workspaces
 
-1. **Scheduling Automation** — the current UI provides synthetic referral intake/review, extraction, and deterministic validation; slot recommendations, booking, cancellation, and rescheduling are implemented backend APIs but not yet UI controls.
-2. **PACS/RIS Automation** — dual-node health, metadata-only study inventory, idempotent transfers, and deterministic reconciliation.
+1. **Imaging Workspace** — the primary experience provides a clinical-first synthetic study worklist, study detail, series/content exploration, and secondary System Operations for PACS administration.
+2. **Scheduling Automation** — synthetic referral intake/review, extraction, deterministic validation, slot recommendations, booking, cancellation, and rescheduling remain available at `/scheduling`.
+
+The current Imaging Workspace is metadata-only. Viewer, longitudinal comparison, clinician-authored reporting, secure sharing, patient email, print/PDF, and EHR export are planned slices.
 
 ## Hard boundaries
 
@@ -48,7 +50,8 @@ docker compose up --build
 
 Open:
 
-- Application: <http://localhost:3000>
+- Application: <http://localhost:3000> (opens the Imaging Workspace)
+- Scheduling Automation: <http://localhost:3000/scheduling>
 - FastAPI docs: <http://localhost:8000/docs>
 - API liveness: <http://localhost:8000/api/v1/health/live>
 - Source Orthanc: <http://localhost:8042>
@@ -96,4 +99,4 @@ The reset command is an operator-run local development action, not an applicatio
 
 ## Current phase
 
-Phases 1–2 deliver the local foundation and scheduling workflow. Phase 3 adds typed non-destructive Orthanc adapters, metadata-only inventory, deterministic synthetic DICOM seeding, idempotent Celery transfers, destination reconciliation, protected PACS APIs, and the PACS operations workspace. Phase 3 host and connected Compose verification are green, including a real synthetic source-to-destination Orthanc transfer through Celery with non-zero reconciliation evidence.
+Phases 1–2 deliver the local foundation and scheduling workflow. Phase 3 adds typed non-destructive Orthanc adapters, metadata-only inventory, deterministic synthetic DICOM seeding, idempotent Celery transfers, destination reconciliation, protected PACS APIs, and the PACS operations workspace. The product has now been repositioned around an Imaging Workspace; technical PACS operations remain secondary and the Scheduling Automation workflow is preserved. Viewer, timeline, reporting, sharing, and EHR export are the next product slices.

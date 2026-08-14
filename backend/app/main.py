@@ -11,6 +11,8 @@ from app.audit.router import router as audit_router
 from app.audit.service import AuditActor, append_audit_event
 from app.auth.router import router as auth_router
 from app.config import get_settings
+from app.imaging.router import router as imaging_router
+from app.incidents.router import router as incidents_router
 from app.pacs.router import router as pacs_router
 from app.scheduling.router import router as scheduling_router
 
@@ -63,4 +65,6 @@ app.include_router(health_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(audit_router, prefix="/api/v1")
 app.include_router(scheduling_router, prefix="/api/v1")
+app.include_router(imaging_router, prefix="/api/v1")
+app.include_router(incidents_router, prefix="/api/v1")
 app.include_router(pacs_router, prefix="/api/v1")

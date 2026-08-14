@@ -1,14 +1,14 @@
 import Link from "next/link";
 
 const tabs = [
+  { href: "/pacs-ops", label: "Imaging Workspace" },
   { href: "/scheduling", label: "Scheduling Automation" },
-  { href: "/pacs-ops", label: "PACS/RIS Automation" },
 ] as const;
 
 export function PrimaryTabs({ currentPath }: { currentPath: string }) {
   return (
     <nav
-      aria-label="Primary automation workspaces"
+      aria-label="Primary operations workspaces"
       className="grid gap-3 sm:grid-cols-2"
     >
       {tabs.map((tab) => {

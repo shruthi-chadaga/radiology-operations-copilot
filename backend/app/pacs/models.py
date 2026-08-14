@@ -28,6 +28,7 @@ class TransferStatus(StrEnum):
     TRANSFERRED = "transferred"
     COMPLETED = "completed"
     FAILED = "failed"
+    FINALIZATION_PENDING = "finalization_pending"
     RECONCILIATION_FAILED = "reconciliation_failed"
 
 
@@ -74,6 +75,10 @@ class PacsStudy(Base):
     patient_id: Mapped[str] = mapped_column(String(64), index=True)
     study_date: Mapped[str | None] = mapped_column(String(16), nullable=True)
     study_description: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    modality: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    patient_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    patient_birth_date: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    patient_sex: Mapped[str | None] = mapped_column(String(4), nullable=True)
     series_count: Mapped[int] = mapped_column(Integer)
     instance_count: Mapped[int] = mapped_column(Integer)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -115,7 +120,9 @@ class TransferDispatch(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now)
-    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class TransferAttempt(Base):

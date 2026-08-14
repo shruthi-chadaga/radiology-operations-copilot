@@ -8,6 +8,9 @@ from app.auth.models import User  # noqa: F401
 from app.config import get_settings
 from app.db.base import Base
 from app.exceptions.models import ExceptionCase  # noqa: F401
+from app.imaging import models as imaging_models  # noqa: F401
+from app.incidents import models as incident_models  # noqa: F401
+from app.incidents import outbox as incident_outbox  # noqa: F401
 from app.pacs import models as pacs_models  # noqa: F401
 from app.scheduling import models as scheduling_models  # noqa: F401
 

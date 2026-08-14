@@ -80,8 +80,12 @@ def sync_inventory(session: Session, node: PacsNode, adapter: PacsAdapter, *, ac
                 study_instance_uid=metadata.study_instance_uid,
                 accession_number=metadata.accession_number,
                 patient_id=metadata.patient_id,
+                patient_name=metadata.patient_name,
+                patient_birth_date=metadata.patient_birth_date,
+                patient_sex=metadata.patient_sex,
                 study_date=metadata.study_date,
                 study_description=metadata.study_description,
+                modality=metadata.modality,
                 series_count=metadata.series_count,
                 instance_count=metadata.instance_count,
                 metadata_json={},
@@ -91,14 +95,22 @@ def sync_inventory(session: Session, node: PacsNode, adapter: PacsAdapter, *, ac
             study.study_instance_uid = metadata.study_instance_uid
             study.accession_number = metadata.accession_number
             study.patient_id = metadata.patient_id
+            study.patient_name = metadata.patient_name
+            study.patient_birth_date = metadata.patient_birth_date
+            study.patient_sex = metadata.patient_sex
             study.study_date = metadata.study_date
             study.study_description = metadata.study_description
+            study.modality = metadata.modality
             study.series_count = metadata.series_count
             study.instance_count = metadata.instance_count
         study.metadata_json = {
             "study_instance_uid": metadata.study_instance_uid,
             "accession_number": metadata.accession_number,
             "patient_id": metadata.patient_id,
+            "patient_name": metadata.patient_name,
+            "patient_birth_date": metadata.patient_birth_date,
+            "patient_sex": metadata.patient_sex,
+            "modality": metadata.modality,
             "series_count": metadata.series_count,
             "instance_count": metadata.instance_count,
             "contains_pixel_data": False,

@@ -8,6 +8,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit.service import AuditActor, append_audit_event
+from app.incidents.classifier import IncidentClassificationInput, classify_incident
+from app.incidents.service import (
+    enqueue_incident_persistence,
+    record_transfer_failure_incident,
+)
 from app.pacs.adapter import PacsAdapter
 from app.pacs.models import (
     PacsNode,
@@ -21,6 +26,12 @@ from app.pacs.models import (
 
 
 class TransferConflict(RuntimeError):
+    pass
+
+
+class DestinationUnavailable(TransferConflict):
+    """Typed adapter outcome for a destination connectivity/rejection failure."""
+
     pass
 
 
@@ -98,6 +109,77 @@ def create_transfer(session: Session, request: TransferCreate) -> TransferJob:
     return job
 
 
+def _recover_transfer_finalization(
+    session: Session,
+    transfer_id: uuid.UUID,
+    attempt_number: int,
+    *,
+    outcome: str,
+    desired_status: TransferStatus,
+    error_code: str | None,
+    redacted_error: str | None,
+    actor_id: str,
+) -> TransferJob:
+    """Persist explicit recovery evidence after post-call finalization fails."""
+
+    session.rollback()
+    job = session.scalar(select(TransferJob).where(TransferJob.id == transfer_id).with_for_update())
+    attempt = session.scalar(
+        select(TransferAttempt)
+        .where(
+            TransferAttempt.transfer_job_id == transfer_id,
+            TransferAttempt.attempt_number == attempt_number,
+        )
+        .with_for_update()
+    )
+    if job is None or attempt is None:
+        raise RuntimeError("transfer finalization could not be recovered") from None
+    job.status = desired_status
+    job.last_error_code = error_code
+    attempt.outcome = outcome
+    attempt.redacted_error = redacted_error
+    attempt.completed_at = datetime.now(UTC)
+    try:
+        append_audit_event(
+            session,
+            actor=AuditActor("system", actor_id),
+            action="pacs.transfer.finalization_pending",
+            entity_type="transfer_job",
+            entity_id=str(job.id),
+            decision_reason="External outcome persisted while finalization requires recovery",
+            correlation_id=job.correlation_id,
+            request_id=job.idempotency_key,
+            success=False,
+            policy_version="pacs-incident-v1",
+            after_state={
+                "attempt": attempt_number,
+                "status": job.status.value,
+                "outcome": outcome,
+            },
+            error_code=error_code or "FINALIZATION_UNAVAILABLE",
+        )
+        session.commit()
+    except Exception as audit_error:
+        session.rollback()
+        job = session.scalar(select(TransferJob).where(TransferJob.id == transfer_id))
+        attempt = session.scalar(
+            select(TransferAttempt)
+            .where(
+                TransferAttempt.transfer_job_id == transfer_id,
+                TransferAttempt.attempt_number == attempt_number,
+            )
+        )
+        if job is None or attempt is None:
+            raise RuntimeError("transfer finalization could not be recovered") from audit_error
+        job.status = TransferStatus.FINALIZATION_PENDING
+        job.last_error_code = "FINALIZATION_AUDIT_UNAVAILABLE"
+        attempt.outcome = outcome
+        attempt.redacted_error = redacted_error
+        attempt.completed_at = datetime.now(UTC)
+        session.commit()
+    return job
+
+
 def execute_transfer(
     session: Session, transfer_id: uuid.UUID, source_adapter: PacsAdapter, *, actor_id: str
 ) -> TransferJob:
@@ -148,37 +230,114 @@ def execute_transfer(
         after_state={"attempt": attempt_number, "status": job.status.value},
     )
     session.commit()
+
+    success = False
+    error_code: str | None = None
+    redacted_error: str | None = None
+    outcome = "accepted"
+    desired_status = TransferStatus.TRANSFERRED
     try:
         response = source_adapter.send_study(study.orthanc_study_id, destination.adapter_key)
         if not response.accepted:
-            raise TransferConflict("PACS adapter did not accept the transfer")
+            raise DestinationUnavailable("PACS adapter did not accept the transfer")
         attempt.outcome = "accepted"
         attempt.response_evidence = {"response_path": response.response_path}
         job.status = TransferStatus.TRANSFERRED
         job.last_error_code = None
         success = True
     except Exception as exc:
-        attempt.outcome = "failed"
-        attempt.redacted_error = f"{type(exc).__name__}: transfer request failed"
+        outcome = "failed"
+        redacted_error = f"{type(exc).__name__}: transfer request failed"
+        attempt.outcome = outcome
+        attempt.redacted_error = redacted_error
         job.status = TransferStatus.FAILED
-        job.last_error_code = type(exc).__name__.upper()
-        success = False
+        error_code = (
+            "DESTINATION_UNAVAILABLE"
+            if isinstance(exc, DestinationUnavailable)
+            else type(exc).__name__.upper()
+        )
+        job.last_error_code = error_code
+        http_status = getattr(exc, "http_status", None)
+        if type(http_status) is not int:
+            http_status = None
+        classification = classify_incident(
+            IncidentClassificationInput(
+                domain="pacs",
+                source_entity_type="transfer_job",
+                source_entity_id=str(job.id),
+                error_code=error_code,
+                error_message=redacted_error,
+                http_status=http_status,
+                transfer_status=job.status.value,
+            )
+        )
+        try:
+            record_transfer_failure_incident(
+                session,
+                job,
+                classification,
+                redacted_error=redacted_error,
+                actor_id=actor_id,
+            )
+        except Exception as persistence_error:
+            enqueue_incident_persistence(
+                session,
+                job,
+                error_code=error_code,
+                redacted_error=redacted_error,
+                evidence={
+                    "classification_rule": classification.rule_code,
+                    "attempt_number": attempt_number,
+                },
+            )
+            try:
+                session.commit()
+            except Exception as outbox_error:
+                _recover_transfer_finalization(
+                    session,
+                    transfer_id,
+                    attempt_number,
+                    outcome=outcome,
+                    desired_status=TransferStatus.FAILED,
+                    error_code=error_code,
+                    redacted_error=redacted_error,
+                    actor_id=actor_id,
+                )
+                raise RuntimeError("incident recovery could not be persisted") from outbox_error
+            raise RuntimeError(
+                "transfer failure incident queued for recovery"
+            ) from persistence_error
+
     attempt.completed_at = datetime.now(UTC)
     job.retry_count = max(0, attempt_number - 1)
-    append_audit_event(
-        session,
-        actor=AuditActor("user", actor_id),
-        action="pacs.transfer.attempted",
-        entity_type="transfer_job",
-        entity_id=str(job.id),
-        decision_reason="Allowlisted source-to-destination DICOM store",
-        correlation_id=job.correlation_id,
-        request_id=job.idempotency_key,
-        success=success,
-        after_state={"attempt": attempt_number, "status": job.status.value},
-        error_code=job.last_error_code,
-    )
-    session.flush()
+    try:
+        append_audit_event(
+            session,
+            actor=AuditActor("user", actor_id),
+            action="pacs.transfer.attempted",
+            entity_type="transfer_job",
+            entity_id=str(job.id),
+            decision_reason="Allowlisted source-to-destination DICOM store",
+            correlation_id=job.correlation_id,
+            request_id=job.idempotency_key,
+            success=success,
+            after_state={"attempt": attempt_number, "status": job.status.value},
+            error_code=job.last_error_code,
+        )
+        session.flush()
+        session.commit()
+    except Exception as finalization_error:
+        _recover_transfer_finalization(
+            session,
+            transfer_id,
+            attempt_number,
+            outcome=outcome,
+            desired_status=desired_status if success else TransferStatus.FAILED,
+            error_code=error_code or job.last_error_code,
+            redacted_error=redacted_error,
+            actor_id=actor_id,
+        )
+        raise RuntimeError("transfer finalization requires recovery") from finalization_error
     return job
 
 
@@ -193,7 +352,10 @@ def reconcile_transfer(
     job = session.scalar(select(TransferJob).where(TransferJob.id == transfer_id).with_for_update())
     if job is None:
         raise TransferConflict("Transfer was not found")
-    if job.status not in {TransferStatus.TRANSFERRED, TransferStatus.RECONCILIATION_FAILED}:
+    if job.status not in {
+        TransferStatus.TRANSFERRED,
+        TransferStatus.RECONCILIATION_FAILED,
+    }:
         raise TransferConflict("Transfer is not ready for reconciliation")
     study = session.get(PacsStudy, job.study_id)
     source_node = session.get(PacsNode, job.source_node_id)

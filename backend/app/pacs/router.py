@@ -1,10 +1,12 @@
 """PACS/RIS APIs expose metadata and allowlisted transfers only."""
 
 import uuid
+from collections import Counter
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -25,14 +27,20 @@ from app.pacs.models import (
     TransferJob,
 )
 from app.pacs.schemas import (
+    DicomTagItem,
+    DicomTagsResponse,
     HealthCheckResponse,
     InventorySyncRequest,
     InventorySyncResponse,
+    PacsDashboardResponse,
     PacsNodePage,
     PacsNodeResponse,
     PacsStudyPage,
     PacsStudyResponse,
     ReconciliationResponse,
+    SeriesInstanceRef,
+    SeriesItem,
+    SeriesListResponse,
     TransferAttemptResponse,
     TransferCreateRequest,
     TransferDetailResponse,
@@ -108,7 +116,12 @@ def _study_response(study: PacsStudy) -> PacsStudyResponse:
         study_instance_uid=study.study_instance_uid,
         accession_number=study.accession_number,
         patient_id=study.patient_id,
+        patient_name=study.patient_name,
+        patient_birth_date=study.patient_birth_date,
+        patient_sex=study.patient_sex,
+        study_date=study.study_date,
         study_description=study.study_description,
+        modality=study.modality,
         series_count=study.series_count,
         instance_count=study.instance_count,
     )
@@ -426,6 +439,212 @@ def reconcile_transfer_endpoint(
         source_instance_count=result.source_instance_count,
         destination_instance_count=result.destination_instance_count,
     )
+
+
+@router.get("/dashboard", response_model=PacsDashboardResponse)
+def pacs_dashboard(
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> PacsDashboardResponse:
+    _authorize(user, write=False)
+    total_studies = db.scalar(select(func.count()).select_from(PacsStudy)) or 0
+    total_nodes = db.scalar(select(func.count()).select_from(PacsNode)) or 0
+    healthy = db.scalar(
+        select(func.count())
+        .select_from(PacsNode)
+        .where(PacsNode.last_health_status == "healthy")
+    ) or 0
+    modalities = db.scalars(select(PacsStudy.modality).where(PacsStudy.modality.isnot(None)))
+    modality_counts = dict(Counter(modalities))
+    recent_window = datetime.now(UTC) - timedelta(hours=24)
+    recent_studies = db.scalar(
+        select(func.count())
+        .select_from(PacsStudy)
+        .where(PacsStudy.last_seen_at >= recent_window)
+    ) or 0
+    recent_transfers = db.scalar(
+        select(func.count())
+        .select_from(TransferJob)
+        .where(TransferJob.created_at >= recent_window)
+    ) or 0
+    return PacsDashboardResponse(
+        total_studies=total_studies,
+        healthy_nodes=healthy,
+        total_nodes=total_nodes,
+        modality_counts=modality_counts,
+        recent_study_count=recent_studies,
+        recent_transfer_count=recent_transfers,
+    )
+
+
+_DICOM_TAG_GROUPS: dict[str, str] = {
+    "StudyInstanceUID": "Study",
+    "StudyDate": "Study",
+    "StudyTime": "Study",
+    "StudyDescription": "Study",
+    "AccessionNumber": "Study",
+    "StudyID": "Study",
+    "Modality": "Study",
+    "ReferringPhysicianName": "Study",
+    "InstitutionName": "Equipment",
+    "Manufacturer": "Equipment",
+    "ManufacturerModelName": "Equipment",
+    "PatientID": "Patient",
+    "PatientName": "Patient",
+    "PatientBirthDate": "Patient",
+    "PatientSex": "Patient",
+    "PatientAge": "Patient",
+    "SeriesDescription": "Series",
+    "SeriesNumber": "Series",
+    "InstanceNumber": "Instance",
+    "SOPInstanceUID": "Instance",
+    "SeriesInstanceUID": "Series",
+    "BodyPartExamined": "Study",
+}
+
+_TAG_NAMES: dict[str, str] = {
+    "StudyInstanceUID": "Study Instance UID",
+    "StudyDate": "Study Date",
+    "StudyTime": "Study Time",
+    "StudyDescription": "Study Description",
+    "AccessionNumber": "Accession Number",
+    "StudyID": "Study ID",
+    "Modality": "Modality",
+    "ReferringPhysicianName": "Referring Physician",
+    "InstitutionName": "Institution",
+    "Manufacturer": "Manufacturer",
+    "ManufacturerModelName": "Model",
+    "PatientID": "Patient ID",
+    "PatientName": "Patient Name",
+    "PatientBirthDate": "Birth Date",
+    "PatientSex": "Sex",
+    "PatientAge": "Age",
+    "SeriesDescription": "Series Description",
+    "SeriesNumber": "Series Number",
+    "InstanceNumber": "Instance Number",
+    "SOPInstanceUID": "SOP Instance UID",
+    "SpecificCharacterSet": "Character Set",
+    "SOPClassUID": "SOP Class UID",
+    "ImageType": "Image Type",
+    "SeriesInstanceUID": "Series Instance UID",
+    "BodyPartExamined": "Body Part",
+}
+
+
+@router.get("/studies/{study_id}/tags", response_model=DicomTagsResponse)
+def get_study_tags(
+    study_id: uuid.UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    adapters: Annotated[dict[str, PacsAdapter], Depends(get_pacs_adapters)],
+) -> DicomTagsResponse:
+    _authorize(user, write=False)
+    study = db.get(PacsStudy, study_id)
+    if study is None:
+        raise HTTPException(status_code=404, detail="PACS study metadata not found")
+    node = db.get(PacsNode, study.node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="PACS node not found")
+    adapter = _adapter_for(node, adapters)
+    try:
+        raw_tags = adapter.get_study_tags(study.orthanc_study_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail="Failed to fetch DICOM tags from Orthanc"
+        ) from exc
+    items: list[DicomTagItem] = []
+    for source, tags_dict in raw_tags.items():
+        for tag_key, tag_value in tags_dict.items():
+            group = (
+                "Patient"
+                if source == "PatientMainDicomTags"
+                else _DICOM_TAG_GROUPS.get(tag_key, "Other")
+            )
+            name = _TAG_NAMES.get(tag_key, tag_key)
+            items.append(
+                DicomTagItem(
+                    tag=tag_key,
+                    name=name,
+                    value=tag_value,
+                    group=group,
+                )
+            )
+    return DicomTagsResponse(study_id=str(study.id), tags=items)
+
+
+@router.get("/studies/{study_id}/series", response_model=SeriesListResponse)
+def get_study_series(
+    study_id: uuid.UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    adapters: Annotated[dict[str, PacsAdapter], Depends(get_pacs_adapters)],
+) -> SeriesListResponse:
+    _authorize(user, write=False)
+    study = db.get(PacsStudy, study_id)
+    if study is None:
+        raise HTTPException(status_code=404, detail="PACS study metadata not found")
+    node = db.get(PacsNode, study.node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="PACS node not found")
+    adapter = _adapter_for(node, adapters)
+    try:
+        raw_series = adapter.list_series(study.orthanc_study_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Failed to fetch series from Orthanc") from exc
+    items: list[SeriesItem] = []
+    for raw in raw_series:
+        tags_raw = raw.get("tags")
+        tags_list: list[DicomTagItem] = []
+        if isinstance(tags_raw, dict):
+            for tk, tv in tags_raw.items():
+                tags_list.append(
+                    DicomTagItem(
+                        tag=tk,
+                        name=_TAG_NAMES.get(tk, tk),
+                        value=tv if isinstance(tv, str) else str(tv),
+                        group="Series",
+                    )
+                )
+        instances_raw = raw.get("instances")
+        instances: list[SeriesInstanceRef] = []
+        if isinstance(instances_raw, list):
+            for inst in instances_raw:
+                if isinstance(inst, dict):
+                    raw_instance_number = inst.get("instance_number")
+                    instances.append(
+                        SeriesInstanceRef(
+                            orthanc_instance_id=str(inst.get("orthanc_instance_id", "")),
+                            sop_instance_uid=str(inst.get("sop_instance_uid", "")),
+                            instance_number=(
+                                raw_instance_number
+                                if isinstance(raw_instance_number, str)
+                                else None
+                            ),
+                        )
+                    )
+        raw_count = raw.get("instance_count")
+        count = raw_count if isinstance(raw_count, int) else 0
+        raw_series_number = raw.get("series_number")
+        raw_series_description = raw.get("series_description")
+        items.append(
+            SeriesItem(
+                orthanc_series_id=str(raw.get("orthanc_series_id", "")),
+                series_instance_uid=str(raw.get("series_instance_uid", "")),
+                series_number=(
+                    raw_series_number if isinstance(raw_series_number, str) else None
+                ),
+                series_description=(
+                    raw_series_description
+                    if isinstance(raw_series_description, str)
+                    else None
+                ),
+                modality=raw.get("modality") if isinstance(raw.get("modality"), str) else None,
+                instance_count=count,
+                instances=instances,
+                tags=tags_list,
+            )
+        )
+    return SeriesListResponse(study_id=str(study.id), series=items)
 
 
 def _adapter_required(adapters: dict[str, PacsAdapter], key: str) -> PacsAdapter:

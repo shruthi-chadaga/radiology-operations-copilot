@@ -9,7 +9,9 @@ from app.pacs.schemas import PacsHealth, PacsStudyMetadata, StoreResult
 
 
 class OrthancAdapterError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, http_status: int | None = None) -> None:
+        super().__init__(message)
+        self.http_status = http_status
 
 
 class OrthancClient:
@@ -95,6 +97,63 @@ class OrthancClient:
         path = payload.get("Path") if isinstance(payload, dict) else None
         return StoreResult(accepted=True, response_path=path if isinstance(path, str) else None)
 
+    def render_instance_preview(self, orthanc_instance_id: str) -> tuple[bytes, str]:
+        """Retrieve one server-rendered preview, never the original DICOM object."""
+        response = self._client.get(f"/instances/{orthanc_instance_id}/preview")
+        self._raise(response)
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type not in {"image/png", "image/jpeg"}:
+            raise OrthancAdapterError("Orthanc preview response was not a supported image")
+        if not response.content:
+            raise OrthancAdapterError("Orthanc preview response was empty")
+        return response.content, content_type
+
+    def list_series(self, orthanc_study_id: str) -> list[dict[str, object]]:
+        response = self._client.get(f"/studies/{orthanc_study_id}/series")
+        self._raise(response)
+        series_ids = response.json()
+        if not isinstance(series_ids, list):
+            raise OrthancAdapterError("Orthanc series response was not a list")
+        result: list[dict[str, object]] = []
+        for sid in series_ids:
+            if not isinstance(sid, str):
+                continue
+            series_resp = self._client.get(f"/series/{sid}")
+            self._raise(series_resp)
+            series_data = series_resp.json()
+            if not isinstance(series_data, dict):
+                continue
+            main_tags = series_data.get("MainDicomTags")
+            tags_dict: dict[str, str] = {}
+            if isinstance(main_tags, dict):
+                for key, value in main_tags.items():
+                    tags_dict[str(key)] = value if isinstance(value, str) else str(value)
+            instances_raw = series_data.get("Instances")
+            instance_ids = (
+                [str(item) for item in instances_raw if isinstance(item, str)]
+                if isinstance(instances_raw, list)
+                else []
+            )
+            instance_refs: list[dict[str, str]] = [
+                {"orthanc_instance_id": iid, "sop_instance_uid": "", "instance_number": ""}
+                for iid in instance_ids
+            ]
+            main_tag_values = series_data.get("MainDicomTags")
+            main_tag_values = main_tag_values if isinstance(main_tag_values, dict) else {}
+            result.append(
+                {
+                    "orthanc_series_id": sid,
+                    "series_instance_uid": str(main_tag_values.get("SeriesInstanceUID", "")),
+                    "series_number": self._string(tags_dict.get("SeriesNumber")),
+                    "series_description": self._string(tags_dict.get("SeriesDescription")),
+                    "modality": self._string(tags_dict.get("Modality")),
+                    "instance_count": len(instance_ids),
+                    "instances": instance_refs,
+                    "tags": tags_dict,
+                }
+            )
+        return result
+
     def _with_instance_count(self, study: PacsStudyMetadata) -> PacsStudyMetadata:
         response = self._client.get(f"/studies/{study.orthanc_study_id}/statistics")
         self._raise(response)
@@ -113,6 +172,27 @@ class OrthancClient:
             raise OrthancAdapterError("Orthanc statistics had an invalid CountInstances")
         return study.model_copy(update={"instance_count": instance_count})
 
+    def get_study_tags(self, orthanc_study_id: str) -> dict[str, dict[str, str]]:
+        response = self._client.get(f"/studies/{orthanc_study_id}")
+        self._raise(response)
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise OrthancAdapterError("Orthanc study response was not an object")
+        main = payload.get("MainDicomTags")
+        patient = payload.get("PatientMainDicomTags")
+        if not isinstance(main, dict) or not isinstance(patient, dict):
+            raise OrthancAdapterError("Orthanc study metadata was incomplete")
+        return {
+            "MainDicomTags": {
+                str(key): value if isinstance(value, str) else str(value)
+                for key, value in main.items()
+            },
+            "PatientMainDicomTags": {
+                str(key): value if isinstance(value, str) else str(value)
+                for key, value in patient.items()
+            },
+        }
+
     @classmethod
     def _normalize_study(cls, raw: Any) -> PacsStudyMetadata:
         if not isinstance(raw, dict):
@@ -121,14 +201,19 @@ class OrthancClient:
         patient = raw.get("PatientMainDicomTags")
         if not isinstance(main, dict) or not isinstance(patient, dict):
             raise OrthancAdapterError("Orthanc study metadata was incomplete")
-        study_uid = cls._required_string(main.get("StudyInstanceUID"), "StudyInstanceUID")
         return PacsStudyMetadata(
             orthanc_study_id=cls._required_string(raw.get("ID"), "ID"),
-            study_instance_uid=study_uid,
+            study_instance_uid=cls._required_string(
+                main.get("StudyInstanceUID"), "StudyInstanceUID"
+            ),
             accession_number=cls._required_string(main.get("AccessionNumber"), "AccessionNumber"),
             patient_id=cls._required_string(patient.get("PatientID"), "PatientID"),
+            patient_name=cls._string(patient.get("PatientName")),
+            patient_birth_date=cls._string(patient.get("PatientBirthDate")),
+            patient_sex=cls._string(patient.get("PatientSex")),
             study_date=cls._string(main.get("StudyDate")),
             study_description=cls._string(main.get("StudyDescription")),
+            modality=cls._string(main.get("Modality")),
             series_count=cls._list_length(raw.get("Series")),
             instance_count=cls._list_length(raw.get("Instances")),
         )
@@ -139,7 +224,8 @@ class OrthancClient:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise OrthancAdapterError(
-                f"Orthanc request failed with HTTP {response.status_code}"
+                f"Orthanc request failed with HTTP {response.status_code}",
+                http_status=response.status_code,
             ) from exc
 
     @staticmethod

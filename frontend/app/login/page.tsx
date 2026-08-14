@@ -48,8 +48,10 @@ export default function LoginPage() {
         );
         return;
       }
-      LoginResponseSchema.parse(await response.json());
-      window.location.assign("/scheduling");
+      const login = LoginResponseSchema.parse(await response.json());
+      window.location.assign(
+        login.user.role === "scheduler" ? "/scheduling" : "/pacs-ops",
+      );
     } catch {
       setMessage(
         "Login failed because the API response was unavailable or invalid.",

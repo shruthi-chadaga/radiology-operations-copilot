@@ -23,8 +23,12 @@ class PacsStudyMetadata(BaseModel):
     study_instance_uid: str
     accession_number: str
     patient_id: str
+    patient_name: str | None = None
+    patient_birth_date: str | None = None
+    patient_sex: str | None = None
     study_date: str | None
     study_description: str | None
+    modality: str | None = None
     series_count: int = Field(ge=0)
     instance_count: int = Field(ge=0)
 
@@ -76,7 +80,12 @@ class PacsStudyResponse(BaseModel):
     study_instance_uid: str
     accession_number: str
     patient_id: str
+    patient_name: str | None = None
+    patient_birth_date: str | None = None
+    patient_sex: str | None = None
+    study_date: str | None = None
     study_description: str | None
+    modality: str | None = None
     series_count: int
     instance_count: int
 
@@ -130,3 +139,46 @@ class TransferAttemptResponse(BaseModel):
 class TransferDetailResponse(TransferResponse):
     attempts: list[TransferAttemptResponse]
     reconciliations: list[ReconciliationResponse]
+
+
+class PacsDashboardResponse(BaseModel):
+    total_studies: int
+    healthy_nodes: int
+    total_nodes: int
+    modality_counts: dict[str, int]
+    recent_study_count: int
+    recent_transfer_count: int
+
+
+class DicomTagItem(BaseModel):
+    tag: str
+    name: str
+    value: str | None
+    group: str
+
+
+class DicomTagsResponse(BaseModel):
+    study_id: str
+    tags: list[DicomTagItem]
+
+
+class SeriesInstanceRef(BaseModel):
+    orthanc_instance_id: str
+    sop_instance_uid: str
+    instance_number: str | None = None
+
+
+class SeriesItem(BaseModel):
+    orthanc_series_id: str
+    series_instance_uid: str
+    series_number: str | None = None
+    series_description: str | None = None
+    modality: str | None = None
+    instance_count: int = Field(ge=0)
+    instances: list[SeriesInstanceRef] = []
+    tags: list[DicomTagItem] = []
+
+
+class SeriesListResponse(BaseModel):
+    study_id: str
+    series: list[SeriesItem]

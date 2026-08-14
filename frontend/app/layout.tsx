@@ -12,7 +12,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Radiology Operations Copilot",
   description:
-    "Synthetic local-first radiology scheduling and PACS/RIS operations portfolio.",
+    "Synthetic local-first radiology imaging and scheduling operations workspace.",
 };
 
 export default function RootLayout({
@@ -27,11 +27,11 @@ export default function RootLayout({
             <div className="mx-auto max-w-7xl px-5 py-5">
               <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
                 <Link
-                  href="/scheduling"
+                  href="/pacs-ops"
                   className="group focus-visible:outline-cyan-400"
                 >
                   <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-300">
-                    Local operations workspace
+                    Imaging operations workspace
                   </p>
                   <h1 className="mt-1 text-xl font-bold tracking-tight group-hover:text-cyan-100">
                     Radiology Operations Copilot

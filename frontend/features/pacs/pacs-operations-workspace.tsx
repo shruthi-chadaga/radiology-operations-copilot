@@ -21,7 +21,12 @@ export type PacsStudy = {
   study_instance_uid: string;
   accession_number: string;
   patient_id: string;
+  patient_name: string | null;
+  patient_birth_date: string | null;
+  patient_sex: string | null;
+  study_date: string | null;
   study_description: string | null;
+  modality: string | null;
   series_count: number;
   instance_count: number;
 };
@@ -47,6 +52,17 @@ type Props = {
     | "operations_manager"
     | "auditor"
     | "system_admin";
+  // Callback props for parent orchestration
+  onNodesLoaded?: (nodes: PacsNode[]) => void;
+  onStudiesLoaded?: (studies: PacsStudy[]) => void;
+  onMessage?: (message: string) => void;
+  onDataRefresh?: () => void;
+  // Embedded mode (used inside collapsible operations panel)
+  embedded?: boolean;
+  nodes?: PacsNode[];
+  studies?: PacsStudy[];
+  canWrite?: boolean;
+  preselectedStudyId?: string;
 };
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -68,7 +84,12 @@ const PacsStudySchema: z.ZodType<PacsStudy> = z
     study_instance_uid: z.string(),
     accession_number: z.string(),
     patient_id: z.string(),
+    patient_name: z.string().nullable(),
+    patient_birth_date: z.string().nullable(),
+    patient_sex: z.string().nullable(),
+    study_date: z.string().nullable(),
     study_description: z.string().nullable(),
+    modality: z.string().nullable(),
     series_count: z.number().int(),
     instance_count: z.number().int(),
   })
@@ -96,10 +117,20 @@ export function PacsOperationsWorkspace({
   initialStudies,
   initialTransfers,
   currentRole,
+  onNodesLoaded,
+  onStudiesLoaded,
+  onMessage,
+  onDataRefresh,
+  embedded = false,
+  nodes: externalNodes,
+  studies: externalStudies,
+  canWrite: externalCanWrite,
+  preselectedStudyId,
 }: Props) {
   const { user, loading } = useSession();
   const role = currentRole ?? user?.role;
-  const canWrite = role === "pacs_admin" || role === "operations_manager";
+  const canWrite =
+    externalCanWrite ?? (role === "pacs_admin" || role === "operations_manager");
   const [nodes, setNodes] = useState(initialNodes ?? []);
   const [studies, setStudies] = useState(initialStudies ?? []);
   const [transfers, setTransfers] = useState(initialTransfers ?? []);
@@ -110,6 +141,10 @@ export function PacsOperationsWorkspace({
     null,
   );
 
+  // Use external data when embedded
+  const displayNodes = embedded ? (externalNodes ?? nodes) : nodes;
+  const displayStudies = embedded ? (externalStudies ?? studies) : studies;
+
   async function loadAll() {
     try {
       const responses = await Promise.all(
@@ -118,28 +153,38 @@ export function PacsOperationsWorkspace({
         ),
       );
       if (responses.some((response) => !response.ok)) {
-        setMessage(
-          responses.some((response) => response.status === 401)
-            ? "Sign in with a PACS-authorized local account."
-            : "PACS metadata could not be loaded.",
-        );
+        const msg = responses.some((response) => response.status === 401)
+          ? "Sign in with a PACS-authorized local account."
+          : "PACS metadata could not be loaded.";
+        setMessage(msg);
+        onMessage?.(msg);
         return;
       }
       const payloads = await Promise.all(
         responses.map((response) => response.json()),
       );
-      setNodes(NodePageSchema.parse(payloads[0]).items);
-      setStudies(StudyPageSchema.parse(payloads[1]).items);
-      setTransfers(TransferPageSchema.parse(payloads[2]).items);
-      setMessage("Metadata only — no pixels stored in PostgreSQL");
+      const loadedNodes = NodePageSchema.parse(payloads[0]).items;
+      const loadedStudies = StudyPageSchema.parse(payloads[1]).items;
+      const loadedTransfers = TransferPageSchema.parse(payloads[2]).items;
+      setNodes(loadedNodes);
+      setStudies(loadedStudies);
+      setTransfers(loadedTransfers);
+      onNodesLoaded?.(loadedNodes);
+      onStudiesLoaded?.(loadedStudies);
+      const msg = "Metadata only — no pixels stored in PostgreSQL";
+      setMessage(msg);
+      onMessage?.(msg);
+      onDataRefresh?.();
     } catch {
-      setMessage(
-        "PACS metadata could not be loaded because the API response was unavailable or invalid.",
-      );
+      const msg =
+        "PACS metadata could not be loaded because the API response was unavailable or invalid.";
+      setMessage(msg);
+      onMessage?.(msg);
     }
   }
 
   useEffect(() => {
+    if (embedded) return; // Don't auto-fetch in embedded mode
     if (initialNodes !== undefined || currentRole !== undefined || loading)
       return;
     const timer = window.setTimeout(() => {
@@ -151,7 +196,9 @@ export function PacsOperationsWorkspace({
         !user ||
         !["pacs_admin", "operations_manager", "auditor"].includes(user.role)
       ) {
-        setMessage("Sign in with a PACS-authorized local account.");
+        const msg = "Sign in with a PACS-authorized local account.";
+        setMessage(msg);
+        onMessage?.(msg);
         return;
       }
       void loadAll();
@@ -159,7 +206,7 @@ export function PacsOperationsWorkspace({
     return () => window.clearTimeout(timer);
     // loadAll is intentionally rerun only when the authenticated principal changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentRole, initialNodes, loading, user?.id, user?.role]);
+  }, [currentRole, initialNodes, loading, user?.id, user?.role, embedded]);
 
   async function checkHealth(node: PacsNode) {
     setMessage(`Checking ${node.name}…`);
@@ -171,14 +218,16 @@ export function PacsOperationsWorkspace({
           credentials: "include",
         },
       );
-      setMessage(
-        response.ok
-          ? `${node.name} health evidence stored.`
-          : `Health check failed (${response.status}).`,
-      );
+      const msg = response.ok
+        ? `${node.name} health evidence stored.`
+        : `Health check failed (${response.status}).`;
+      setMessage(msg);
+      onMessage?.(msg);
       if (response.ok) await loadAll();
     } catch {
-      setMessage("Health check failed because the API is unavailable.");
+      const msg = "Health check failed because the API is unavailable.";
+      setMessage(msg);
+      onMessage?.(msg);
     }
   }
 
@@ -194,14 +243,16 @@ export function PacsOperationsWorkspace({
           synthetic_data_confirmed: true,
         }),
       });
-      setMessage(
-        response.ok
-          ? "Metadata inventory synchronized without deletion."
-          : `Inventory sync failed (${response.status}).`,
-      );
+      const msg = response.ok
+        ? "Metadata inventory synchronized without deletion."
+        : `Inventory sync failed (${response.status}).`;
+      setMessage(msg);
+      onMessage?.(msg);
       if (response.ok) await loadAll();
     } catch {
-      setMessage("Inventory sync failed because the API is unavailable.");
+      const msg = "Inventory sync failed because the API is unavailable.";
+      setMessage(msg);
+      onMessage?.(msg);
     }
   }
 
@@ -229,20 +280,157 @@ export function PacsOperationsWorkspace({
       });
       if (!response.ok) {
         if (response.status < 500) ambiguousRequest.current = null;
-        setMessage(`Transfer request was rejected (${response.status}).`);
+        const msg = `Transfer request was rejected (${response.status}).`;
+        setMessage(msg);
+        onMessage?.(msg);
         return;
       }
       TransferSchema.parse(await response.json());
       ambiguousRequest.current = null;
-      setMessage("Transfer request accepted into the durable dispatch queue.");
+      const msg = "Transfer request accepted into the durable dispatch queue.";
+      setMessage(msg);
+      onMessage?.(msg);
       await loadAll();
     } catch {
-      setMessage(
-        "Transfer status is unknown because the API response was unavailable or invalid; retrying will reuse the same idempotency key.",
-      );
+      const msg =
+        "Transfer status is unknown because the API response was unavailable or invalid; retrying will reuse the same idempotency key.";
+      setMessage(msg);
+      onMessage?.(msg);
     }
   }
 
+  // Only render the full UI when NOT embedded (embedded just uses the hidden loader)
+  if (embedded) {
+    return (
+      <div className="space-y-6">
+        <section className="rounded-xl border border-slate-700 bg-slate-900/60 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h4 className="font-semibold text-sm">PACS nodes</h4>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Non-destructive health checks &amp; inventory sync
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadAll()}
+              className="rounded-lg border border-violet-400/40 px-3 py-2 text-xs text-violet-200 hover:bg-violet-400/10 transition-colors"
+            >
+              Reload metadata
+            </button>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {displayNodes.map((node) => (
+              <article
+                key={node.id}
+                className="rounded-lg border border-slate-700 bg-slate-950/50 p-4"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h5 className="font-semibold text-sm">{node.name}</h5>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      AE: {node.dicom_ae_title}
+                    </p>
+                  </div>
+                  <Status value={node.last_health_status ?? "not checked"} />
+                </div>
+                {canWrite && (
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void checkHealth(node)}
+                      className="rounded-lg border border-cyan-400/40 px-2.5 py-1.5 text-xs text-cyan-200 hover:bg-cyan-400/10 transition-colors"
+                    >
+                      Check health
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void syncNode(node)}
+                      className="rounded-lg border border-slate-600 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-slate-700 transition-colors"
+                    >
+                      Sync inventory
+                    </button>
+                  </div>
+                )}
+              </article>
+            ))}
+          </div>
+        </section>
+
+        {canWrite && (
+          <section className="rounded-xl border border-slate-700 bg-slate-900/60 p-5">
+            <h4 className="font-semibold text-sm">Queue study transfer</h4>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Source-to-destination storage only. No deletion or tag
+              modification.
+            </p>
+            <form
+              onSubmit={queueTransfer}
+              className="mt-4 grid gap-3 md:grid-cols-4 md:items-end"
+            >
+              <Select
+                label="Source node"
+                name="source_node_id"
+                items={displayNodes
+                  .filter((item) => item.node_type === "source")
+                  .map((item) => [item.id, item.name])}
+              />
+              <Select
+                label="Destination node"
+                name="destination_node_id"
+                items={displayNodes
+                  .filter((item) => item.node_type === "destination")
+                  .map((item) => [item.id, item.name])}
+              />
+              <Select
+                label="Synthetic study"
+                name="study_id"
+                defaultValue={
+                  preselectedStudyId
+                    ? displayStudies.find((s) => s.id === preselectedStudyId)
+                        ?.accession_number
+                    : undefined
+                }
+                items={displayStudies.map((item) => [
+                  item.id,
+                  item.accession_number,
+                ])}
+              />
+              <button
+                disabled={!displayStudies.length}
+                className="rounded-xl bg-violet-500 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50 hover:bg-violet-400 transition-colors"
+              >
+                Queue transfer
+              </button>
+            </form>
+          </section>
+        )}
+
+        <div className="space-y-2">
+          {transfers.length === 0 ? (
+            <p className="text-xs text-slate-500">No transfer jobs queued.</p>
+          ) : (
+            transfers.map((transfer) => (
+              <article
+                key={transfer.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-700 px-4 py-2.5"
+              >
+                <span className="font-mono text-xs text-slate-400">
+                  {transfer.id.slice(0, 12)}…
+                </span>
+                <Status value={transfer.status} />
+                <span className="text-xs text-slate-500">
+                  Retries {transfer.retry_count}/{transfer.maximum_retries}
+                </span>
+              </article>
+            ))
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Standalone mode (kept for backwards compatibility / hidden data loader)
   return (
     <div className="mt-8 space-y-8">
       <section
@@ -430,10 +618,12 @@ function Select({
   label,
   name,
   items,
+  defaultValue,
 }: {
   label: string;
   name: string;
   items: string[][];
+  defaultValue?: string;
 }) {
   return (
     <label className="text-sm font-medium">
@@ -441,6 +631,7 @@ function Select({
       <select
         required
         name={name}
+        defaultValue={defaultValue}
         className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3"
       >
         {items.map(([value, text]) => (
@@ -457,7 +648,11 @@ function Status({ value }: { value: string }) {
   const healthy = ["healthy", "completed", "transferred"].includes(value);
   return (
     <span
-      className={`rounded-full border px-2.5 py-1 text-xs ${healthy ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-amber-400/30 bg-amber-400/10 text-amber-100"}`}
+      className={`rounded-full border px-2.5 py-1 text-xs ${
+        healthy
+          ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+          : "border-amber-400/30 bg-amber-400/10 text-amber-100"
+      }`}
     >
       {value.replaceAll("_", " ")}
     </span>
