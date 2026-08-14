@@ -48,6 +48,44 @@ def _next_version_number(session: Session, report: RadiologyReport) -> int:
     return (latest.version_number + 1) if latest else 1
 
 
+def _locked_report(session: Session, report_id: uuid.UUID) -> RadiologyReport | None:
+    return session.scalar(
+        select(RadiologyReport).where(RadiologyReport.id == report_id).with_for_update()
+    )
+
+
+def _locked_report_for_study(session: Session, study_id: uuid.UUID) -> RadiologyReport | None:
+    return session.scalar(
+        select(RadiologyReport).where(RadiologyReport.study_id == study_id).with_for_update()
+    )
+
+
+def _normalize_authored_content(
+    *, indication: str, findings: str, impression: str
+) -> tuple[str, str, str]:
+    normalized = (indication.strip(), findings.strip(), impression.strip())
+    for field_name, value in zip(("indication", "findings", "impression"), normalized, strict=True):
+        if not value:
+            raise ReportWorkflowError(f"{field_name} must not be blank", status_code=422)
+    return normalized
+
+
+def _check_expected_version(
+    report: RadiologyReport | None, expected_version_number: int | None
+) -> None:
+    if report is None:
+        if expected_version_number is not None:
+            raise ReportWorkflowError("stale report version", status_code=409)
+        return
+    if expected_version_number is None:
+        raise ReportWorkflowError(
+            "Expected current report version is required",
+            status_code=409,
+        )
+    if report.current_version_number != expected_version_number:
+        raise ReportWorkflowError("stale report version", status_code=409)
+
+
 def _update_worklist_status(session: Session, study_id: uuid.UUID, report_status: str) -> None:
     item = session.scalar(
         select(ImagingWorklistItem).where(ImagingWorklistItem.pacs_study_id == study_id)
@@ -80,9 +118,11 @@ def save_draft(
     indication: str,
     findings: str,
     impression: str,
+    expected_version_number: int | None = None,
 ) -> tuple[RadiologyReport, RadiologyReportVersion]:
     _ensure_study(session, study_id)
-    report = get_report(session, study_id)
+    report = _locked_report_for_study(session, study_id)
+    _check_expected_version(report, expected_version_number)
     if report is None:
         report = RadiologyReport(study_id=study_id, status=ReportStatus.DRAFT)
         session.add(report)
@@ -91,6 +131,11 @@ def save_draft(
         raise ReportWorkflowError(
             "A finalized report cannot be edited; create a correction instead"
         )
+    indication, findings, impression = _normalize_authored_content(
+        indication=indication,
+        findings=findings,
+        impression=impression,
+    )
     version = RadiologyReportVersion(
         report_id=report.id,
         version_number=_next_version_number(session, report),
@@ -117,13 +162,23 @@ def create_correction(
     indication: str,
     findings: str,
     impression: str,
+    expected_version_number: int,
 ) -> tuple[RadiologyReport, RadiologyReportVersion]:
-    report = session.get(RadiologyReport, report_id)
+    report = _locked_report(session, report_id)
     if report is None:
         raise ReportWorkflowError("Report not found", status_code=404)
+    _check_expected_version(report, expected_version_number)
     _ensure_study(session, report.study_id)
     if report.status != ReportStatus.FINALIZED:
         raise ReportWorkflowError("Only a finalized report can enter correction")
+    indication, findings, impression = _normalize_authored_content(
+        indication=indication,
+        findings=findings,
+        impression=impression,
+    )
+    correction_reason = correction_reason.strip()
+    if not correction_reason:
+        raise ReportWorkflowError("correction_reason must not be blank", status_code=422)
     version = RadiologyReportVersion(
         report_id=report.id,
         version_number=_next_version_number(session, report),
@@ -148,25 +203,34 @@ def finalize_report(
     *,
     report_id: uuid.UUID,
     author_id: str,
+    expected_version_number: int,
 ) -> tuple[RadiologyReport, RadiologyReportVersion]:
-    report = session.get(RadiologyReport, report_id)
+    report = _locked_report(session, report_id)
     if report is None:
         raise ReportWorkflowError("Report not found", status_code=404)
+    _check_expected_version(report, expected_version_number)
     _ensure_study(session, report.study_id)
     if report.status not in {ReportStatus.DRAFT, ReportStatus.CORRECTION_PENDING}:
         raise ReportWorkflowError("Only a draft or pending correction can be finalized")
     source = _latest_version(session, report)
     if source is None:
         raise ReportWorkflowError("A report requires authored content before finalization")
+    indication, findings, impression = _normalize_authored_content(
+        indication=source.indication,
+        findings=source.findings,
+        impression=source.impression,
+    )
     version = RadiologyReportVersion(
         report_id=report.id,
         version_number=_next_version_number(session, report),
         kind=ReportVersionKind.FINAL,
         author_id=author_id,
-        indication=source.indication,
-        findings=source.findings,
-        impression=source.impression,
-        correction_reason=source.correction_reason,
+        indication=indication,
+        findings=findings,
+        impression=impression,
+        correction_reason=source.correction_reason.strip()
+        if source.correction_reason is not None
+        else None,
     )
     session.add(version)
     report.status = ReportStatus.FINALIZED

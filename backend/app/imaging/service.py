@@ -41,6 +41,7 @@ def _status(
     if existing and existing.workflow_status in {
         ImagingWorklistStatus.IN_REVIEW,
         ImagingWorklistStatus.REPORT_DRAFT,
+        ImagingWorklistStatus.CORRECTION_PENDING,
         ImagingWorklistStatus.FINALIZED,
     }:
         return existing.workflow_status
@@ -89,6 +90,7 @@ def _find_item(
         select(ImagingWorklistItem).where(
             ImagingWorklistItem.accession_number == accession_number,
             ImagingWorklistItem.pacs_patient_id == pacs_patient_id,
+            ImagingWorklistItem.pacs_study_id.is_(None),
         )
     )
 
@@ -154,11 +156,20 @@ def synchronize_worklist(session: Session) -> int:
             select(ImagingOrder).where(ImagingOrder.appointment_id == appointment.id)
         )
         slot = session.get(Slot, appointment.slot_id)
-        study = session.scalar(
-            select(PacsStudy)
-            .where(PacsStudy.accession_number == appointment.accession_number)
-            .order_by(PacsStudy.last_seen_at.desc(), PacsStudy.id)
-        )
+        patient = session.get(SyntheticPatient, appointment.patient_id)
+        matching_studies: list[PacsStudy] = []
+        if patient is not None:
+            matching_studies = list(
+                session.scalars(
+                    select(PacsStudy)
+                    .where(
+                        PacsStudy.accession_number == appointment.accession_number,
+                        PacsStudy.patient_id == patient.external_patient_id,
+                    )
+                    .order_by(PacsStudy.last_seen_at.desc(), PacsStudy.id)
+                )
+            )
+        study = matching_studies[0] if len(matching_studies) == 1 else None
         if study is not None:
             _upsert_study_item(
                 session,
@@ -184,9 +195,7 @@ def synchronize_worklist(session: Session) -> int:
                     appointment_id=appointment.id,
                     accession_number=appointment.accession_number,
                     modality=order.modality if order else None,
-                    study_description=(
-                        order.requested_procedure_description if order else None
-                    ),
+                    study_description=(order.requested_procedure_description if order else None),
                     report_status="not_started",
                 )
                 session.add(item)
@@ -216,18 +225,6 @@ def synchronize_worklist(session: Session) -> int:
         if session.scalar(
             select(ImagingWorklistItem).where(ImagingWorklistItem.pacs_study_id == study.id)
         ):
-            continue
-        matched_appointment = session.scalar(
-            select(Appointment).where(
-                Appointment.accession_number == study.accession_number,
-                Appointment.patient_id.in_(
-                    select(SyntheticPatient.id).where(
-                        SyntheticPatient.external_patient_id == study.patient_id
-                    )
-                ),
-            )
-        )
-        if matched_appointment is not None:
             continue
         _upsert_study_item(session, study=study)
         changed += 1

@@ -181,3 +181,89 @@ def test_patient_timeline_is_newest_first_and_contains_referral_appointment_stud
         assert events[0]["label"] == "Study received"
     finally:
         session.close()
+
+
+def test_worklist_does_not_link_same_accession_to_different_synthetic_patient() -> None:
+    session, _, appointment, study = setup_session()
+    try:
+        study.patient_id = "SYN-IMAGING-OTHER"
+        session.commit()
+
+        assert synchronize_worklist(session) == 2
+        session.commit()
+        items = list(
+            session.scalars(
+                select(ImagingWorklistItem).order_by(ImagingWorklistItem.pacs_patient_id)
+            )
+        )
+
+        assert len(items) == 2
+        scheduled = next(item for item in items if item.appointment_id == appointment.id)
+        pacs_only = next(item for item in items if item.pacs_study_id == study.id)
+        assert scheduled.pacs_study_id is None
+        assert scheduled.pacs_patient_id == f"SCHEDULED-{appointment.accession_number}"
+        assert pacs_only.appointment_id is None
+        assert pacs_only.pacs_patient_id == "SYN-IMAGING-OTHER"
+        assert pacs_only.accession_number == appointment.accession_number
+    finally:
+        session.close()
+
+
+def test_worklist_sync_preserves_correction_pending_report_state() -> None:
+    session, _, _, study = setup_session()
+    try:
+        synchronize_worklist(session)
+        item = session.scalar(
+            select(ImagingWorklistItem).where(ImagingWorklistItem.pacs_study_id == study.id)
+        )
+        assert item is not None
+        item.workflow_status = ImagingWorklistStatus.CORRECTION_PENDING
+        item.report_status = "correction_pending"
+        session.commit()
+
+        synchronize_worklist(session)
+        session.commit()
+
+        loaded = session.get(ImagingWorklistItem, item.id)
+        assert loaded is not None
+        assert loaded.workflow_status == ImagingWorklistStatus.CORRECTION_PENDING
+        assert loaded.report_status == "correction_pending"
+    finally:
+        session.close()
+
+
+def test_worklist_does_not_choose_between_duplicate_matching_pacs_studies() -> None:
+    session, patient, appointment, study = setup_session()
+    try:
+        duplicate = PacsStudy(
+            node_id=study.node_id,
+            orthanc_study_id="orthanc-imaging-duplicate",
+            study_instance_uid="1.2.840.synthetic.imaging.2",
+            accession_number=appointment.accession_number,
+            patient_id=patient.external_patient_id,
+            study_date=study.study_date,
+            study_description=study.study_description,
+            modality=study.modality,
+            patient_name=study.patient_name,
+            series_count=study.series_count,
+            instance_count=study.instance_count,
+            metadata_json={"synthetic": True},
+            last_seen_at=datetime(2026, 8, 7, 9, 21, tzinfo=UTC),
+        )
+        session.add(duplicate)
+        session.commit()
+
+        assert synchronize_worklist(session) == 3
+        session.commit()
+        items = list(session.scalars(select(ImagingWorklistItem)))
+
+        assert len(items) == 3
+        scheduled = next(item for item in items if item.appointment_id == appointment.id)
+        assert scheduled.pacs_study_id is None
+        assert {item.pacs_study_id for item in items if item.pacs_study_id is not None} == {
+            study.id,
+            duplicate.id,
+        }
+        assert all(item.appointment_id is None for item in items if item.pacs_study_id is not None)
+    finally:
+        session.close()

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
-from app.imaging.viewer import find_prior_studies, first_instance_id
+from app.imaging.viewer import find_prior_studies, first_instance_id, is_synthetic_study
 from app.pacs.models import PacsNode, PacsStudy
 from app.pacs.orthanc import OrthancAdapterError, OrthancClient
 
@@ -90,6 +90,12 @@ def test_prior_matching_is_same_patient_modality_and_earlier_date_only() -> None
         session.add_all([current, prior, wrong_modality, future])
         session.commit()
         assert find_prior_studies(session, current) == [prior]
+
+
+def test_missing_metadata_attestation_fails_closed_for_viewer() -> None:
+    study = PacsStudy(metadata_json=None)
+
+    assert is_synthetic_study(study) is False
 
 
 def test_first_instance_id_is_deterministic() -> None:

@@ -32,6 +32,7 @@ from app.imaging.schemas import (
     PatientTimelineResponse,
     ReportCorrectionRequest,
     ReportDraftRequest,
+    ReportFinalizeRequest,
     ReportResponse,
     ReportVersionResponse,
     ViewerComparisonResponse,
@@ -129,25 +130,20 @@ def _viewer_study(
     )
 
 
-def _adapter_for(
-    study: PacsStudy, adapters: dict[str, PacsAdapter], db: Session
-) -> PacsAdapter:
+def _adapter_for(study: PacsStudy, adapters: dict[str, PacsAdapter], db: Session) -> PacsAdapter:
     node = db.get(PacsNode, study.node_id)
     if node is None or node.adapter_key not in adapters:
         raise HTTPException(status_code=503, detail="PACS adapter unavailable")
     return adapters[node.adapter_key]
 
 
-def _instance_belongs_to_study(
-    adapter: PacsAdapter, study: PacsStudy, instance_id: str
-) -> bool:
+def _instance_belongs_to_study(adapter: PacsAdapter, study: PacsStudy, instance_id: str) -> bool:
     for series in adapter.list_series(study.orthanc_study_id):
         instances = series.get("instances")
         if not isinstance(instances, list):
             continue
         if any(
-            isinstance(instance, dict)
-            and instance.get("orthanc_instance_id") == instance_id
+            isinstance(instance, dict) and instance.get("orthanc_instance_id") == instance_id
             for instance in instances
         ):
             return True
@@ -277,9 +273,7 @@ def get_viewer_context(
     for prior in find_prior_studies(db, study):
         try:
             prior_adapter = _adapter_for(prior, adapters, db)
-            prior_instance = first_instance_id(
-                prior_adapter.list_series(prior.orthanc_study_id)
-            )
+            prior_instance = first_instance_id(prior_adapter.list_series(prior.orthanc_study_id))
         except Exception:
             prior_instance = None
         priors.append(_viewer_study(prior, representative_instance_id=prior_instance))
@@ -375,12 +369,18 @@ def save_study_report_draft(
 @router.post("/reports/{report_id}/finalize", response_model=ReportResponse)
 def finalize_study_report(
     report_id: uuid.UUID,
+    payload: ReportFinalizeRequest,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> ReportResponse:
     _authorize_reporter(user)
     try:
-        report, _ = finalize_report(db, report_id=report_id, author_id=str(user.id))
+        report, _ = finalize_report(
+            db,
+            report_id=report_id,
+            author_id=str(user.id),
+            **payload.model_dump(),
+        )
     except ReportWorkflowError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     _audit_report(

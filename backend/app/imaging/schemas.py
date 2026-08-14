@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ImagingWorklistItemResponse(BaseModel):
@@ -83,10 +83,32 @@ class ReportDraftRequest(BaseModel):
     indication: str = Field(default="", max_length=400)
     findings: str = Field(default="", max_length=12000)
     impression: str = Field(default="", max_length=4000)
+    expected_version_number: int | None = Field(default=None, ge=1)
+
+    @field_validator("indication", "findings", "impression")
+    @classmethod
+    def authored_content_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("authored content must not be blank")
+        return value.strip()
 
 
 class ReportCorrectionRequest(ReportDraftRequest):
+    expected_version_number: int = Field(ge=1)
     correction_reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("correction_reason")
+    @classmethod
+    def correction_reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("correction reason must not be blank")
+        return value.strip()
+
+
+class ReportFinalizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version_number: int = Field(ge=1)
 
 
 class ReportVersionResponse(BaseModel):
