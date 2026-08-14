@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { z } from "zod";
 
 import { useSession } from "@/components/session-context";
@@ -130,7 +130,8 @@ export function PacsOperationsWorkspace({
   const { user, loading } = useSession();
   const role = currentRole ?? user?.role;
   const canWrite =
-    externalCanWrite ?? (role === "pacs_admin" || role === "operations_manager");
+    externalCanWrite ??
+    (role === "pacs_admin" || role === "operations_manager");
   const [nodes, setNodes] = useState(initialNodes ?? []);
   const [studies, setStudies] = useState(initialStudies ?? []);
   const [transfers, setTransfers] = useState(initialTransfers ?? []);
@@ -144,6 +145,16 @@ export function PacsOperationsWorkspace({
   // Use external data when embedded
   const displayNodes = embedded ? (externalNodes ?? nodes) : nodes;
   const displayStudies = embedded ? (externalStudies ?? studies) : studies;
+  const preferredTransferStudy = preselectedStudyId
+    ? displayStudies.find((study) => study.id === preselectedStudyId)
+    : displayStudies[0];
+  const defaultTransferStudyId = preferredTransferStudy?.id ?? "";
+  const [selectedTransferStudyId, setSelectedTransferStudyId] = useState(
+    defaultTransferStudyId,
+  );
+  const selectedTransferStudy = displayStudies.find(
+    (study) => study.id === selectedTransferStudyId,
+  );
 
   async function loadAll() {
     try {
@@ -364,6 +375,12 @@ export function PacsOperationsWorkspace({
               Source-to-destination storage only. No deletion or tag
               modification.
             </p>
+            {selectedTransferStudy && (
+              <p aria-live="polite" className="mt-3 text-xs text-violet-200">
+                Selected synthetic study:{" "}
+                {selectedTransferStudy.accession_number}
+              </p>
+            )}
             <form
               onSubmit={queueTransfer}
               className="mt-4 grid gap-3 md:grid-cols-4 md:items-end"
@@ -385,11 +402,9 @@ export function PacsOperationsWorkspace({
               <Select
                 label="Synthetic study"
                 name="study_id"
-                defaultValue={
-                  preselectedStudyId
-                    ? displayStudies.find((s) => s.id === preselectedStudyId)
-                        ?.accession_number
-                    : undefined
+                value={selectedTransferStudyId}
+                onChange={(event) =>
+                  setSelectedTransferStudyId(event.target.value)
                 }
                 items={displayStudies.map((item) => [
                   item.id,
@@ -619,11 +634,15 @@ function Select({
   name,
   items,
   defaultValue,
+  value,
+  onChange,
 }: {
   label: string;
   name: string;
   items: string[][];
   defaultValue?: string;
+  value?: string;
+  onChange?: (event: ChangeEvent<HTMLSelectElement>) => void;
 }) {
   return (
     <label className="text-sm font-medium">
@@ -631,7 +650,9 @@ function Select({
       <select
         required
         name={name}
-        defaultValue={defaultValue}
+        defaultValue={value === undefined ? defaultValue : undefined}
+        value={value}
+        onChange={onChange}
         className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3"
       >
         {items.map(([value, text]) => (
