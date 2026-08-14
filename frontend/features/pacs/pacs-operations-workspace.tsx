@@ -145,29 +145,6 @@ export function PacsOperationsWorkspace({
   // Use external data when embedded
   const displayNodes = embedded ? (externalNodes ?? nodes) : nodes;
   const displayStudies = embedded ? (externalStudies ?? studies) : studies;
-  const preferredTransferStudy = preselectedStudyId
-    ? displayStudies.find((study) => study.id === preselectedStudyId)
-    : displayStudies[0];
-  const defaultTransferStudyId = preferredTransferStudy?.id ?? "";
-  const [selectedTransferStudyId, setSelectedTransferStudyId] = useState(
-    defaultTransferStudyId,
-  );
-  const selectedTransferStudy = displayStudies.find(
-    (study) => study.id === selectedTransferStudyId,
-  );
-
-  useEffect(() => {
-    const explicitStudy = preselectedStudyId
-      ? displayStudies.find((study) => study.id === preselectedStudyId)
-      : undefined;
-    setSelectedTransferStudyId((currentStudyId) => {
-      if (explicitStudy) return explicitStudy.id;
-      if (displayStudies.some((study) => study.id === currentStudyId)) {
-        return currentStudyId;
-      }
-      return displayStudies[0]?.id ?? "";
-    });
-  }, [displayStudies, preselectedStudyId]);
 
   async function loadAll() {
     try {
@@ -388,12 +365,6 @@ export function PacsOperationsWorkspace({
               Source-to-destination storage only. No deletion or tag
               modification.
             </p>
-            {selectedTransferStudy && (
-              <p aria-live="polite" className="mt-3 text-xs text-violet-200">
-                Selected synthetic study:{" "}
-                {selectedTransferStudy.accession_number}
-              </p>
-            )}
             <form
               onSubmit={queueTransfer}
               className="mt-4 grid gap-3 md:grid-cols-4 md:items-end"
@@ -412,17 +383,12 @@ export function PacsOperationsWorkspace({
                   .filter((item) => item.node_type === "destination")
                   .map((item) => [item.id, item.name])}
               />
-              <Select
-                label="Synthetic study"
-                name="study_id"
-                value={selectedTransferStudyId}
-                onChange={(event) =>
-                  setSelectedTransferStudyId(event.target.value)
-                }
-                items={displayStudies.map((item) => [
-                  item.id,
-                  item.accession_number,
-                ])}
+              <TransferStudySelect
+                key={`${preselectedStudyId ?? ""}:${displayStudies
+                  .map((study) => study.id)
+                  .join(",")}`}
+                studies={displayStudies}
+                preselectedStudyId={preselectedStudyId}
               />
               <button
                 disabled={!displayStudies.length}
@@ -638,6 +604,39 @@ export function PacsOperationsWorkspace({
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+function TransferStudySelect({
+  studies,
+  preselectedStudyId,
+}: {
+  studies: PacsStudy[];
+  preselectedStudyId?: string;
+}) {
+  const preferredStudy = preselectedStudyId
+    ? studies.find((study) => study.id === preselectedStudyId)
+    : studies[0];
+  const [selectedStudyId, setSelectedStudyId] = useState(
+    preferredStudy?.id ?? "",
+  );
+  const selectedStudy = studies.find((study) => study.id === selectedStudyId);
+
+  return (
+    <div>
+      {selectedStudy && (
+        <p aria-live="polite" className="mb-2 text-xs text-violet-200">
+          Selected synthetic study: {selectedStudy.accession_number}
+        </p>
+      )}
+      <Select
+        label="Synthetic study"
+        name="study_id"
+        value={selectedStudyId}
+        onChange={(event) => setSelectedStudyId(event.target.value)}
+        items={studies.map((study) => [study.id, study.accession_number])}
+      />
     </div>
   );
 }

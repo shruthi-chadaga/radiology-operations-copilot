@@ -78,9 +78,6 @@ describe("PacsOperationsWorkspace transfer form", () => {
       <PacsOperationsWorkspace embedded nodes={nodes} studies={[]} canWrite />,
     );
 
-    const studySelect = screen.getByRole("combobox", {
-      name: "Synthetic study",
-    });
     rerender(
       <PacsOperationsWorkspace
         embedded
@@ -91,6 +88,9 @@ describe("PacsOperationsWorkspace transfer form", () => {
       />,
     );
 
+    const studySelect = screen.getByRole("combobox", {
+      name: "Synthetic study",
+    });
     expect(studySelect).toHaveValue("study-second-uuid");
     expect(
       screen.getByText("Selected synthetic study: ACC-SECOND"),
