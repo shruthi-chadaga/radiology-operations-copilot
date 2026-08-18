@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+from unittest.mock import patch
 
+import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -13,7 +15,9 @@ from app.incidents.classifier import (
     classify_incident,
 )
 from app.incidents.models import PacsIncident, PacsIncidentStatus
+from app.incidents.outbox import IncidentPersistenceOutbox
 from app.incidents.service import record_transfer_failure_incident
+from app.pacs import transfer as transfer_module
 from app.pacs.models import (
     PacsNode,
     PacsStudy,
@@ -128,6 +132,56 @@ def test_execute_transfer_persists_failure_incident_without_retry_execution() ->
         assert session.scalar(
             select(AuditEvent).where(AuditEvent.action == "pacs.incident.created")
         )
+
+
+def test_final_attempt_audit_failure_preserves_failed_attempt_and_incident_evidence() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        job = setup_failed_transfer(session)
+        adapter = FailingAdapter(DestinationUnavailable("synthetic destination unavailable"))
+        original_append_audit_event = transfer_module.append_audit_event
+
+        def fail_final_attempt_audit(*args: object, **kwargs: object) -> object:
+            if kwargs.get("action") == "pacs.transfer.attempted":
+                raise RuntimeError("synthetic final audit failure")
+            return original_append_audit_event(*args, **kwargs)
+
+        with (
+            patch(
+                "app.pacs.transfer.append_audit_event",
+                side_effect=fail_final_attempt_audit,
+            ),
+            pytest.raises(RuntimeError, match="finalization requires recovery"),
+        ):
+            execute_transfer(session, job.id, adapter, actor_id="celery-worker")
+
+        assert adapter.calls == 1
+        session.expire_all()
+        persisted_job = session.get(TransferJob, job.id)
+        assert persisted_job is not None
+        assert persisted_job.status == TransferStatus.FAILED
+        assert session.scalar(select(func.count()).select_from(TransferAttempt)) == 1
+        attempt = session.scalar(select(TransferAttempt))
+        assert attempt is not None
+        assert attempt.outcome == "failed"
+        incident = session.scalar(
+            select(PacsIncident).where(PacsIncident.transfer_job_id == job.id)
+        )
+        outbox = session.scalar(
+            select(IncidentPersistenceOutbox).where(
+                IncidentPersistenceOutbox.transfer_job_id == job.id
+            )
+        )
+        assert incident is not None or outbox is not None
+        if outbox is not None:
+            assert outbox.status == "pending"
+            assert outbox.attempt_count == 1
+            assert outbox.evidence_json["attempt_number"] == 1
 
 
 def test_failed_transfer_creates_one_audited_open_incident() -> None:
@@ -314,3 +368,123 @@ def test_incident_persistence_never_authorizes_or_executes_a_retry() -> None:
         assert classification.execution_authorized is False
         assert classification.category == IncidentCategory.CONNECTIVITY
         assert session.scalar(select(func.count()).select_from(TransferAttempt)) == 1
+
+
+@dataclass
+class HttpErrorAdapter:
+    http_status: int
+    calls: int = 0
+
+    def send_study(self, orthanc_study_id: str, destination_name: str) -> object:
+        self.calls += 1
+        error = RuntimeError("synthetic HTTP error")
+        error.http_status = self.http_status  # type: ignore[attr-defined]
+        raise error
+
+
+def test_http_401_finalization_rollback_preserves_unauthorized_classification() -> None:
+    """Regression: HTTP 401 through finalization rollback must remain UNAUTHORIZED/critical."""
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        job = setup_failed_transfer(session)
+        adapter = HttpErrorAdapter(http_status=401)
+        original_append_audit_event = transfer_module.append_audit_event
+
+        def fail_final_audit(*args: object, **kwargs: object) -> object:
+            if kwargs.get("action") == "pacs.transfer.attempted":
+                raise RuntimeError("synthetic final audit failure")
+            return original_append_audit_event(*args, **kwargs)
+
+        with (
+            patch(
+                "app.pacs.transfer.append_audit_event",
+                side_effect=fail_final_audit,
+            ),
+            pytest.raises(RuntimeError, match="finalization requires recovery"),
+        ):
+            execute_transfer(session, job.id, adapter, actor_id="celery-worker")
+
+        assert adapter.calls == 1
+        session.expire_all()
+        outbox = session.scalar(
+            select(IncidentPersistenceOutbox).where(
+                IncidentPersistenceOutbox.transfer_job_id == job.id
+            )
+        )
+        assert outbox is not None
+        assert outbox.status == "pending"
+        assert outbox.evidence_json.get("http_status") == 401
+        assert outbox.evidence_json.get("recovery") == "transfer_finalization"
+
+        # Drain the outbox and verify incident classification is UNAUTHORIZED/critical
+        from app.incidents.recovery import drain_incident_persistence_outbox
+
+        result = drain_incident_persistence_outbox(session, actor_id="outbox-worker")
+        assert result.completed == 1
+        session.commit()
+
+        incident = session.scalar(
+            select(PacsIncident).where(PacsIncident.transfer_job_id == job.id)
+        )
+        assert incident is not None
+        assert incident.category == IncidentCategory.UNAUTHORIZED.value
+        assert incident.severity == IncidentSeverity.CRITICAL.value
+        assert incident.rule_code == "UNAUTHORIZED_ACTION_REQUIRES_HUMAN"
+
+
+def test_http_403_finalization_rollback_preserves_unauthorized_classification() -> None:
+    """Regression: HTTP 403 through finalization rollback must remain UNAUTHORIZED/critical."""
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        job = setup_failed_transfer(session)
+        adapter = HttpErrorAdapter(http_status=403)
+        original_append_audit_event = transfer_module.append_audit_event
+
+        def fail_final_audit(*args: object, **kwargs: object) -> object:
+            if kwargs.get("action") == "pacs.transfer.attempted":
+                raise RuntimeError("synthetic final audit failure")
+            return original_append_audit_event(*args, **kwargs)
+
+        with (
+            patch(
+                "app.pacs.transfer.append_audit_event",
+                side_effect=fail_final_audit,
+            ),
+            pytest.raises(RuntimeError, match="finalization requires recovery"),
+        ):
+            execute_transfer(session, job.id, adapter, actor_id="celery-worker")
+
+        assert adapter.calls == 1
+        session.expire_all()
+        outbox = session.scalar(
+            select(IncidentPersistenceOutbox).where(
+                IncidentPersistenceOutbox.transfer_job_id == job.id
+            )
+        )
+        assert outbox is not None
+        assert outbox.status == "pending"
+        assert outbox.evidence_json.get("http_status") == 403
+
+        # Drain the outbox and verify incident classification is UNAUTHORIZED/critical
+        from app.incidents.recovery import drain_incident_persistence_outbox
+
+        result = drain_incident_persistence_outbox(session, actor_id="outbox-worker")
+        assert result.completed == 1
+        session.commit()
+
+        incident = session.scalar(
+            select(PacsIncident).where(PacsIncident.transfer_job_id == job.id)
+        )
+        assert incident is not None
+        assert incident.category == IncidentCategory.UNAUTHORIZED.value
+        assert incident.severity == IncidentSeverity.CRITICAL.value
