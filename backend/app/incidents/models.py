@@ -74,9 +74,7 @@ class PacsIncident(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     incident_number: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    transfer_job_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("transfer_jobs.id"), index=True
-    )
+    transfer_job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("transfer_jobs.id"), index=True)
     study_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pacs_studies.id"), index=True)
     source_node_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pacs_nodes.id"))
     destination_node_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pacs_nodes.id"))
@@ -138,9 +136,7 @@ class IncidentRemediationProposal(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    incident_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("pacs_incidents.id"), index=True
-    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pacs_incidents.id"), index=True)
     requested_action: Mapped[str] = mapped_column(String(64))
     proposer_id: Mapped[str] = mapped_column(String(64), index=True)
     proposer_role: Mapped[str] = mapped_column(String(32))

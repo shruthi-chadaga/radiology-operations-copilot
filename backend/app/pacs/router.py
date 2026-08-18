@@ -449,24 +449,33 @@ def pacs_dashboard(
     _authorize(user, write=False)
     total_studies = db.scalar(select(func.count()).select_from(PacsStudy)) or 0
     total_nodes = db.scalar(select(func.count()).select_from(PacsNode)) or 0
-    healthy = db.scalar(
-        select(func.count())
-        .select_from(PacsNode)
-        .where(PacsNode.last_health_status == "healthy")
-    ) or 0
+    healthy = (
+        db.scalar(
+            select(func.count())
+            .select_from(PacsNode)
+            .where(PacsNode.last_health_status == "healthy")
+        )
+        or 0
+    )
     modalities = db.scalars(select(PacsStudy.modality).where(PacsStudy.modality.isnot(None)))
     modality_counts = dict(Counter(modalities))
     recent_window = datetime.now(UTC) - timedelta(hours=24)
-    recent_studies = db.scalar(
-        select(func.count())
-        .select_from(PacsStudy)
-        .where(PacsStudy.last_seen_at >= recent_window)
-    ) or 0
-    recent_transfers = db.scalar(
-        select(func.count())
-        .select_from(TransferJob)
-        .where(TransferJob.created_at >= recent_window)
-    ) or 0
+    recent_studies = (
+        db.scalar(
+            select(func.count())
+            .select_from(PacsStudy)
+            .where(PacsStudy.last_seen_at >= recent_window)
+        )
+        or 0
+    )
+    recent_transfers = (
+        db.scalar(
+            select(func.count())
+            .select_from(TransferJob)
+            .where(TransferJob.created_at >= recent_window)
+        )
+        or 0
+    )
     return PacsDashboardResponse(
         total_studies=total_studies,
         healthy_nodes=healthy,
@@ -630,13 +639,9 @@ def get_study_series(
             SeriesItem(
                 orthanc_series_id=str(raw.get("orthanc_series_id", "")),
                 series_instance_uid=str(raw.get("series_instance_uid", "")),
-                series_number=(
-                    raw_series_number if isinstance(raw_series_number, str) else None
-                ),
+                series_number=(raw_series_number if isinstance(raw_series_number, str) else None),
                 series_description=(
-                    raw_series_description
-                    if isinstance(raw_series_description, str)
-                    else None
+                    raw_series_description if isinstance(raw_series_description, str) else None
                 ),
                 modality=raw.get("modality") if isinstance(raw.get("modality"), str) else None,
                 instance_count=count,

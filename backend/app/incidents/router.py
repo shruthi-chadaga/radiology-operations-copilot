@@ -170,9 +170,7 @@ def list_incidents(
     db: Annotated[Session, Depends(get_db)],
 ) -> IncidentPage:
     _authorize(user, _READ_ROLES)
-    incidents = db.scalars(
-        select(PacsIncident).order_by(PacsIncident.updated_at.desc()).limit(200)
-    )
+    incidents = db.scalars(select(PacsIncident).order_by(PacsIncident.updated_at.desc()).limit(200))
     return IncidentPage(items=[_incident_response(db, item) for item in incidents])
 
 
@@ -183,9 +181,7 @@ def list_outbox(
 ) -> OutboxPage:
     _authorize(user, _READ_ROLES)
     items = db.scalars(
-        select(IncidentPersistenceOutbox)
-        .order_by(IncidentPersistenceOutbox.created_at)
-        .limit(200)
+        select(IncidentPersistenceOutbox).order_by(IncidentPersistenceOutbox.created_at).limit(200)
     )
     return OutboxPage(items=[_outbox_response(item) for item in items])
 
@@ -211,8 +207,7 @@ def drain_outbox(
         entity_type="incident_persistence_outbox",
         entity_id="batch",
         decision_reason=(
-            "Operator requested bounded incident evidence recovery; "
-            "no remediation was executed"
+            "Operator requested bounded incident evidence recovery; no remediation was executed"
         ),
         correlation_id=correlation_id,
         request_id=request_id,

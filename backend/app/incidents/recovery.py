@@ -112,8 +112,7 @@ def drain_incident_persistence_outbox(
                 entity_type="incident_persistence_outbox",
                 entity_id=str(refreshed.id),
                 decision_reason=(
-                    "Incident evidence recovery did not complete; "
-                    "no remediation was executed"
+                    "Incident evidence recovery did not complete; no remediation was executed"
                 ),
                 correlation_id=f"outbox-{refreshed.id}",
                 request_id=f"outbox-{refreshed.id}",

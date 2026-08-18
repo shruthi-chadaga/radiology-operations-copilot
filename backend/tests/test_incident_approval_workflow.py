@@ -203,20 +203,26 @@ def test_auditor_and_scheduler_cannot_propose_or_approve() -> None:
     app.dependency_overrides[get_current_user] = lambda: users[Role.AUDITOR]
     try:
         client = TestClient(app)
-        assert client.post(
-            f"/api/v1/incidents/{incident.id}/proposals",
-            json={"requested_action": "RETRY_TRANSFER", "rationale": "Not allowed"},
-        ).status_code == 403
+        assert (
+            client.post(
+                f"/api/v1/incidents/{incident.id}/proposals",
+                json={"requested_action": "RETRY_TRANSFER", "rationale": "Not allowed"},
+            ).status_code
+            == 403
+        )
         app.dependency_overrides[get_current_user] = lambda: users[Role.PACS_ADMIN]
         proposal = client.post(
             f"/api/v1/incidents/{incident.id}/proposals",
             json={"requested_action": "RETRY_TRANSFER", "rationale": "Need review"},
         ).json()
         app.dependency_overrides[get_current_user] = lambda: users[Role.SCHEDULER]
-        assert client.post(
-            f"/api/v1/incidents/proposals/{proposal['id']}/approve",
-            json={"decision_reason": "Not allowed"},
-        ).status_code == 403
+        assert (
+            client.post(
+                f"/api/v1/incidents/proposals/{proposal['id']}/approve",
+                json={"decision_reason": "Not allowed"},
+            ).status_code
+            == 403
+        )
     finally:
         app.dependency_overrides.clear()
 

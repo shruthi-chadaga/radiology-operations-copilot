@@ -121,7 +121,10 @@ export function StudyWorklist({
     <section aria-labelledby="worklist-title" className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h3 id="worklist-title" className="text-lg font-semibold tracking-tight">
+          <h3
+            id="worklist-title"
+            className="text-lg font-semibold tracking-tight"
+          >
             Imaging Worklist
           </h3>
           <p className="mt-1 text-sm text-slate-500">
@@ -191,22 +194,52 @@ export function StudyWorklist({
           <table className="w-full min-w-[760px] text-left text-sm">
             <thead className="border-b border-slate-700 text-xs uppercase tracking-wider text-slate-400">
               <tr>
-                <WorklistHeader field="accession_number" currentField={sortField} direction={sortDir} onSort={toggleSort}>
+                <WorklistHeader
+                  field="accession_number"
+                  currentField={sortField}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                >
                   Accession #
                 </WorklistHeader>
-                <WorklistHeader field="patient_id" currentField={sortField} direction={sortDir} onSort={toggleSort}>
+                <WorklistHeader
+                  field="patient_id"
+                  currentField={sortField}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                >
                   Patient ID
                 </WorklistHeader>
-                <WorklistHeader field="patient_name" currentField={sortField} direction={sortDir} onSort={toggleSort}>
+                <WorklistHeader
+                  field="patient_name"
+                  currentField={sortField}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                >
                   Patient Name
                 </WorklistHeader>
-                <WorklistHeader field="modality" currentField={sortField} direction={sortDir} onSort={toggleSort}>
+                <WorklistHeader
+                  field="modality"
+                  currentField={sortField}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                >
                   Modality
                 </WorklistHeader>
-                <WorklistHeader field="study_date" currentField={sortField} direction={sortDir} onSort={toggleSort}>
+                <WorklistHeader
+                  field="study_date"
+                  currentField={sortField}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                >
                   Study Date
                 </WorklistHeader>
-                <WorklistHeader field="study_description" currentField={sortField} direction={sortDir} onSort={toggleSort}>
+                <WorklistHeader
+                  field="study_description"
+                  currentField={sortField}
+                  direction={sortDir}
+                  onSort={toggleSort}
+                >
                   Study
                 </WorklistHeader>
                 {showTechnical && <th className="px-3 py-3">Storage</th>}
@@ -229,11 +262,17 @@ export function StudyWorklist({
                     <td className="px-3 py-3.5 font-mono font-medium text-violet-200">
                       {study.accession_number}
                     </td>
-                    <td className="px-3 py-3.5 font-mono text-xs">{study.patient_id}</td>
-                    <td className="px-3 py-3.5 text-slate-200">{study.patient_name ?? "—"}</td>
+                    <td className="px-3 py-3.5 font-mono text-xs">
+                      {study.patient_id}
+                    </td>
+                    <td className="px-3 py-3.5 text-slate-200">
+                      {study.patient_name ?? "—"}
+                    </td>
                     <td className="px-3 py-3.5">
                       <span className="rounded-full border border-slate-600 bg-slate-800 px-2 py-0.5 text-xs font-medium">
-                        {MODALITY_LABELS[study.modality ?? ""] ?? study.modality ?? "—"}
+                        {MODALITY_LABELS[study.modality ?? ""] ??
+                          study.modality ??
+                          "—"}
                       </span>
                     </td>
                     <td className="px-3 py-3.5 text-xs text-slate-400">
@@ -251,7 +290,8 @@ export function StudyWorklist({
                     )}
                     {showTechnical && (
                       <td className="px-3 py-3.5 text-xs tabular-nums text-slate-500">
-                        {study.series_count} series · {study.instance_count} instances
+                        {study.series_count} series · {study.instance_count}{" "}
+                        instances
                       </td>
                     )}
                   </tr>

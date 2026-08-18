@@ -660,7 +660,9 @@ function TransferStudySelect({
           onChange={(event) => setSelectedStudyId(event.target.value)}
           className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3"
           aria-invalid={requestedStudyMissing}
-          aria-describedby={requestedStudyMissing ? "study-selection-error" : undefined}
+          aria-describedby={
+            requestedStudyMissing ? "study-selection-error" : undefined
+          }
         >
           {requestedStudyMissing && (
             <option value="" disabled>

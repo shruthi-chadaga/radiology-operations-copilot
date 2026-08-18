@@ -72,19 +72,11 @@ class ImagingWorklistItem(Base):
         default=ImagingPriority.ROUTINE,
         index=True,
     )
-    assigned_reader_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, index=True
-    )
+    assigned_reader_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     report_status: Mapped[str] = mapped_column(String(24), default="not_started")
-    scheduled_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    received_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_seen_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.now, onupdate=datetime.now
@@ -98,9 +90,7 @@ class RadiologyReport(Base):
     __table_args__ = (UniqueConstraint("study_id", name="uq_radiology_report_study"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    study_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("pacs_studies.id"), index=True
-    )
+    study_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pacs_studies.id"), index=True)
     status: Mapped[ReportStatus] = mapped_column(
         Enum(ReportStatus, native_enum=False, length=24),
         default=ReportStatus.DRAFT,
@@ -108,9 +98,7 @@ class RadiologyReport(Base):
     )
     current_version_number: Mapped[int | None] = mapped_column(nullable=True)
     finalized_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    finalized_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.now, onupdate=datetime.now
@@ -130,9 +118,7 @@ class RadiologyReportVersion(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    report_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("radiology_reports.id"), index=True
-    )
+    report_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("radiology_reports.id"), index=True)
     version_number: Mapped[int] = mapped_column()
     kind: Mapped[ReportVersionKind] = mapped_column(
         Enum(ReportVersionKind, native_enum=False, length=16)
@@ -141,7 +127,5 @@ class RadiologyReportVersion(Base):
     indication: Mapped[str] = mapped_column(String(400), default="")
     findings: Mapped[str] = mapped_column(String(12000), default="")
     impression: Mapped[str] = mapped_column(String(4000), default="")
-    correction_reason: Mapped[str | None] = mapped_column(
-        String(1000), nullable=True
-    )
+    correction_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now)

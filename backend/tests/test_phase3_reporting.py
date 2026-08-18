@@ -423,7 +423,7 @@ def test_stale_finalization_is_rejected() -> None:
 
 def test_stale_two_session_finalization_cannot_create_duplicate_final_versions() -> None:
     """Regression: Two sessions must not both finalize v1 and create duplicate final versions.
-    
+
     Session A loads v1 draft, Session B loads v1 draft.
     Session A finalizes v1 -> creates v2 final.
     Session B (with stale cached v1) tries to finalize with expected_version=1.
@@ -443,12 +443,12 @@ def test_stale_two_session_finalization_cannot_create_duplicate_final_versions()
             impression="Synthetic impression",
         )
         session_a.commit()
-        
+
         # Both sessions load the report (session_b now has cached v1 in identity map)
         report_b = session_b.get(type(report_a), report_a.id)
         assert report_b is not None
         assert report_b.current_version_number == 1
-        
+
         # Session A finalizes v1 (creates v2 final)
         report_a_finalized, final_version_a = finalize_report(
             session_a,
@@ -460,7 +460,7 @@ def test_stale_two_session_finalization_cannot_create_duplicate_final_versions()
         assert report_a_finalized.status == ReportStatus.FINALIZED
         assert report_a_finalized.finalized_by == "reader-1"
         assert final_version_a.version_number == 2
-        
+
         # Session B tries to finalize with stale expected_version=1
         # This MUST fail even though session_b's identity map has the old cached version
         with pytest.raises(ReportWorkflowError, match="stale report version") as error:
@@ -471,7 +471,7 @@ def test_stale_two_session_finalization_cannot_create_duplicate_final_versions()
                 expected_version_number=1,
             )
         assert error.value.status_code == 409
-        
+
         # Verify only one final version exists (v2 from session_a)
         session_b.expire_all()
         versions_b = _versions(session_b)
@@ -479,12 +479,12 @@ def test_stale_two_session_finalization_cannot_create_duplicate_final_versions()
         final_versions = [v for v in versions_b if v.kind.value == "final"]
         assert len(final_versions) == 1
         assert final_versions[0].author_id == "reader-1"
-        
+
         # Verify finalized_by was not overwritten
         report_b_refreshed = session_b.get(type(report_a), report_a.id)
         assert report_b_refreshed.finalized_by == "reader-1"
         assert report_b_refreshed.status == ReportStatus.FINALIZED
-        
+
     finally:
         session_b.close()
         session_a.close()

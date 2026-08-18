@@ -107,9 +107,7 @@ def _approval_policy_input(
         maximum_health_age_seconds=MAX_HEALTH_AGE_SECONDS,
         proposer_id=proposal.proposer_id,
         approver_id=str(approver.id),
-        approver_role=cast(
-            Literal["operations_manager", "system_admin"], approver.role.value
-        ),
+        approver_role=cast(Literal["operations_manager", "system_admin"], approver.role.value),
         approver_authorized=approver.role in APPROVER_ROLES,
         approval_granted=True,
     )

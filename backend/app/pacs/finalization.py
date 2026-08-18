@@ -29,9 +29,7 @@ def recover_transfer_finalization(
     the transaction is rolled back and the job remains recoverable for another attempt.
     """
 
-    job = session.scalar(
-        select(TransferJob).where(TransferJob.id == transfer_id).with_for_update()
-    )
+    job = session.scalar(select(TransferJob).where(TransferJob.id == transfer_id).with_for_update())
     if job is None:
         raise FinalizationRecoveryConflict("Transfer was not found")
     if job.status != TransferStatus.FINALIZATION_PENDING:

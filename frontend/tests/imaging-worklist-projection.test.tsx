@@ -28,9 +28,15 @@ describe("Imaging Workspace projection", () => {
   it("shows worklist status and priority while keeping assignment optional", () => {
     render(<ImagingWorklist items={[item]} onSelect={() => undefined} />);
 
-    expect(screen.getByRole("heading", { name: "Unified imaging worklist" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Unified imaging worklist" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("URGENT")).toBeInTheDocument();
-    expect(within(screen.getByRole("row", { name: /Aster Example/ })).getByText("Ready for review")).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("row", { name: /Aster Example/ })).getByText(
+        "Ready for review",
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Unassigned")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Show assignment" }));
@@ -42,18 +48,22 @@ describe("Imaging Workspace projection", () => {
       <PatientTimeline
         patientName="Aster Example"
         externalPatientId="SYN-0001"
-        events={[{
-          event_type: "study",
-          event_id: "study-1",
-          occurred_at: "2026-08-07T09:20:00Z",
-          label: "Study received",
-          detail: "ACC-SYN-0001",
-          status: "ready_for_review",
-        }]}
+        events={[
+          {
+            event_type: "study",
+            event_id: "study-1",
+            occurred_at: "2026-08-07T09:20:00Z",
+            label: "Study received",
+            detail: "ACC-SYN-0001",
+            status: "ready_for_review",
+          },
+        ]}
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Patient timeline" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Patient timeline" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Study received")).toBeInTheDocument();
     expect(screen.getByText("Metadata only")).toBeInTheDocument();
   });

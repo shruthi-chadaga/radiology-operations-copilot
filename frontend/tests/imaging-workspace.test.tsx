@@ -39,7 +39,9 @@ describe("Imaging Workspace worklist", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Imaging Worklist" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Imaging Worklist" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Synthetic CT abdomen")).toBeInTheDocument();
     expect(screen.queryByText("Source Orthanc")).not.toBeInTheDocument();
     expect(screen.queryByText(/148 instances/)).not.toBeInTheDocument();
@@ -64,7 +66,9 @@ describe("Imaging Workspace worklist", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Show technical details" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show technical details" }),
+    );
     expect(screen.getByText("Source Orthanc")).toBeInTheDocument();
     expect(screen.getByText("3 series · 148 instances")).toBeInTheDocument();
   });

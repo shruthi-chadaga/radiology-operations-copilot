@@ -45,7 +45,10 @@ describe("IncidentReviewPanel", () => {
     promptMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
     vi.stubGlobal("prompt", promptMock);
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ items: [incident] }) });
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [incident] }),
+    });
   });
 
   it("shows a pending proposal and records a separately reasoned approval", async () => {
@@ -68,8 +71,12 @@ describe("IncidentReviewPanel", () => {
     render(<IncidentReviewPanel />);
 
     expect(
-      await screen.findByText(/never retries a transfer or performs remediation/i),
+      await screen.findByText(
+        /never retries a transfer or performs remediation/i,
+      ),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /retry transfer/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /retry transfer/i }),
+    ).not.toBeInTheDocument();
   });
 });

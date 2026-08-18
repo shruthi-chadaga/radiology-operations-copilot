@@ -128,20 +128,22 @@ describe("PacsOperationsWorkspace transfer form", () => {
   });
 
   it("does not POST when preselectedStudyId is missing until user manually selects", async () => {
-    const fetchMock = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
-      if (options?.method === "POST") {
+    const fetchMock = vi
+      .fn()
+      .mockImplementation((url: string, options?: RequestInit) => {
+        if (options?.method === "POST") {
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: async () => acceptedTransfer,
+          });
+        }
         return Promise.resolve({
           ok: true,
-          status: 201,
-          json: async () => acceptedTransfer,
+          status: 200,
+          json: async () => ({ items: [] }),
         });
-      }
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: async () => ({ items: [] }),
       });
-    });
     vi.stubGlobal("fetch", fetchMock);
 
     render(
@@ -154,7 +156,9 @@ describe("PacsOperationsWorkspace transfer form", () => {
       />,
     );
 
-    const form = screen.getByRole("combobox", { name: "Synthetic study" }).closest("form")!;
+    const form = screen
+      .getByRole("combobox", { name: "Synthetic study" })
+      .closest("form")!;
 
     // Try to submit with missing preselection - should not call fetch
     fireEvent.submit(form);
@@ -164,7 +168,9 @@ describe("PacsOperationsWorkspace transfer form", () => {
     );
 
     // User manually selects a study
-    const studySelect = screen.getByRole("combobox", { name: "Synthetic study" });
+    const studySelect = screen.getByRole("combobox", {
+      name: "Synthetic study",
+    });
     fireEvent.change(studySelect, { target: { value: "study-first-uuid" } });
 
     // Now submit should work

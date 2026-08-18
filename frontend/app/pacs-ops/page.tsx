@@ -11,11 +11,20 @@ import {
   type PacsNode,
   type PacsStudy,
 } from "@/features/pacs/pacs-operations-workspace";
-import { ImagingWorklist, type WorklistItem } from "@/features/pacs/imaging-worklist";
-import { PatientTimeline, type TimelineEvent } from "@/features/pacs/patient-timeline";
+import {
+  ImagingWorklist,
+  type WorklistItem,
+} from "@/features/pacs/imaging-worklist";
+import {
+  PatientTimeline,
+  type TimelineEvent,
+} from "@/features/pacs/patient-timeline";
 import { ReportEditor } from "@/features/pacs/report-editor";
 import { StudyDetail } from "@/features/pacs/study-detail";
-import { ViewerComparison, type ViewerStudy } from "@/features/pacs/viewer-comparison";
+import {
+  ViewerComparison,
+  type ViewerStudy,
+} from "@/features/pacs/viewer-comparison";
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const NodePageSchema = z
@@ -135,11 +144,14 @@ export default function PacsOpsPage() {
   const { user, loading: sessionLoading } = useSession();
   const role = user?.role;
   const canWrite = role === "pacs_admin" || role === "operations_manager";
-  const canRead = ["pacs_admin", "operations_manager", "auditor"].includes(role ?? "");
+  const canRead = ["pacs_admin", "operations_manager", "auditor"].includes(
+    role ?? "",
+  );
   const [nodes, setNodes] = useState<PacsNode[]>([]);
   const [studies, setStudies] = useState<PacsStudy[]>([]);
   const [worklist, setWorklist] = useState<WorklistItem[]>([]);
-  const [selectedContext, setSelectedContext] = useState<SelectedContext | null>(null);
+  const [selectedContext, setSelectedContext] =
+    useState<SelectedContext | null>(null);
   const [viewer, setViewer] = useState<{
     current: ViewerStudy;
     priors: ViewerStudy[];
@@ -154,12 +166,20 @@ export default function PacsOpsPage() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [nodeResponse, studyResponse, worklistResponse] = await Promise.all([
-        fetch(`${apiUrl}/api/v1/pacs/nodes`, { credentials: "include" }),
-        fetch(`${apiUrl}/api/v1/pacs/studies`, { credentials: "include" }),
-        fetch(`${apiUrl}/api/v1/imaging/worklist`, { credentials: "include" }),
-      ]);
-      if ([nodeResponse, studyResponse, worklistResponse].some((response) => !response.ok)) {
+      const [nodeResponse, studyResponse, worklistResponse] = await Promise.all(
+        [
+          fetch(`${apiUrl}/api/v1/pacs/nodes`, { credentials: "include" }),
+          fetch(`${apiUrl}/api/v1/pacs/studies`, { credentials: "include" }),
+          fetch(`${apiUrl}/api/v1/imaging/worklist`, {
+            credentials: "include",
+          }),
+        ],
+      );
+      if (
+        [nodeResponse, studyResponse, worklistResponse].some(
+          (response) => !response.ok,
+        )
+      ) {
         throw new Error("workspace data unavailable");
       }
       const [nodePayload, studyPayload, worklistPayload] = await Promise.all([
@@ -241,12 +261,16 @@ export default function PacsOpsPage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-sm font-medium text-violet-300">Workspace 01</p>
-          <h2 id="pacs-title" className="mt-1 text-3xl font-bold tracking-tight">
+          <h2
+            id="pacs-title"
+            className="mt-1 text-3xl font-bold tracking-tight"
+          >
             Imaging Workspace
           </h2>
           <p className="mt-3 max-w-3xl text-slate-400">
-            Receive, find, review, and track synthetic imaging studies. Technical storage
-            operations remain available when an operator needs them.
+            Receive, find, review, and track synthetic imaging studies.
+            Technical storage operations remain available when an operator needs
+            them.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -266,7 +290,11 @@ export default function PacsOpsPage() {
           </span>
         </div>
       </div>
-      {loading && <div className="mt-12 text-sm text-slate-400">Loading imaging worklist…</div>}
+      {loading && (
+        <div className="mt-12 text-sm text-slate-400">
+          Loading imaging worklist…
+        </div>
+      )}
       {!sessionLoading && !canRead && (
         <div className="mt-8 rounded-2xl border border-amber-400/20 bg-amber-400/5 p-6 text-sm text-amber-100">
           Sign in with an imaging-authorized local account.
@@ -281,10 +309,13 @@ export default function PacsOpsPage() {
                   Selected work item
                 </p>
                 <h3 className="mt-2 text-2xl font-semibold">
-                  {selectedContext.item.study_description ?? selectedContext.item.accession_number}
+                  {selectedContext.item.study_description ??
+                    selectedContext.item.accession_number}
                 </h3>
                 <p className="mt-2 text-sm text-slate-400">
-                  {selectedContext.item.patient_name ?? selectedContext.item.pacs_patient_id} · {selectedContext.item.accession_number}
+                  {selectedContext.item.patient_name ??
+                    selectedContext.item.pacs_patient_id}{" "}
+                  · {selectedContext.item.accession_number}
                 </p>
               </div>
               <PatientTimeline
@@ -302,10 +333,20 @@ export default function PacsOpsPage() {
                     >
                       Open synthetic viewer
                     </button>
-                    {viewerError && <p className="text-sm text-amber-200">{viewerError}</p>}
+                    {viewerError && (
+                      <p className="text-sm text-amber-200">{viewerError}</p>
+                    )}
                   </div>
-                  {viewer && <ViewerComparison current={viewer.current} priors={viewer.priors} />}
-                  <ReportEditor studyId={selectedStudy.id} canWrite={canWrite} />
+                  {viewer && (
+                    <ViewerComparison
+                      current={viewer.current}
+                      priors={viewer.priors}
+                    />
+                  )}
+                  <ReportEditor
+                    studyId={selectedStudy.id}
+                    canWrite={canWrite}
+                  />
                   <StudyDetail
                     key={selectedStudy.id}
                     study={selectedStudy}
@@ -317,7 +358,8 @@ export default function PacsOpsPage() {
                 </>
               ) : (
                 <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 text-sm text-slate-400">
-                  This work item has no separately loaded PACS study metadata. Viewer and reporting remain unavailable.
+                  This work item has no separately loaded PACS study metadata.
+                  Viewer and reporting remain unavailable.
                 </div>
               )}
             </div>
@@ -327,9 +369,12 @@ export default function PacsOpsPage() {
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-violet-200">
                   Today&apos;s imaging desk
                 </p>
-                <h3 className="mt-2 text-2xl font-semibold">What needs attention?</h3>
+                <h3 className="mt-2 text-2xl font-semibold">
+                  What needs attention?
+                </h3>
                 <p className="mt-2 max-w-2xl text-sm text-slate-300">
-                  Prioritized work items connect scheduled exams with received synthetic studies and longitudinal patient context.
+                  Prioritized work items connect scheduled exams with received
+                  synthetic studies and longitudinal patient context.
                 </p>
               </section>
               <ImagingWorklist items={worklist} onSelect={selectWorklistItem} />
@@ -347,10 +392,13 @@ export default function PacsOpsPage() {
                     System Operations
                   </h3>
                   <p className="mt-0.5 text-xs text-slate-500">
-                    Administrator tools: node health, inventory sync, transfers, reconciliation, and incident review
+                    Administrator tools: node health, inventory sync, transfers,
+                    reconciliation, and incident review
                   </p>
                 </div>
-                <span className="text-xs text-slate-500">Show technical details</span>
+                <span className="text-xs text-slate-500">
+                  Show technical details
+                </span>
               </div>
             </summary>
             <div className="border-t border-slate-800 px-6 pb-6 pt-4">
@@ -359,13 +407,17 @@ export default function PacsOpsPage() {
                 nodes={nodes}
                 studies={studies}
                 canWrite={canWrite}
-                preselectedStudyId={selectedContext?.item.pacs_study_id ?? undefined}
+                preselectedStudyId={
+                  selectedContext?.item.pacs_study_id ?? undefined
+                }
                 embedded
               />
               <IncidentReviewPanel />
             </div>
           </details>
-          <p aria-live="polite" className="text-sm text-slate-500">{message}</p>
+          <p aria-live="polite" className="text-sm text-slate-500">
+            {message}
+          </p>
         </div>
       )}
     </section>
