@@ -452,6 +452,17 @@ def reconcile_transfer(
             "destination_matches": len(destination_matches),
         },
     )
+    reconciliation_evidence = {
+        "reconciliation_outcome": outcome,
+        "reconciliation_identifiers_match": identifiers_match,
+        "reconciliation_instance_counts_match": counts_match,
+        "reconciliation_source_match_count": len(source_matches),
+        "reconciliation_destination_match_count": len(destination_matches),
+        "reconciliation_source_instance_count": source.instance_count if source else 0,
+        "reconciliation_destination_instance_count": destination.instance_count
+        if destination
+        else 0,
+    }
     session.add(result)
     if outcome == "matched":
         job.status = TransferStatus.COMPLETED
@@ -459,6 +470,28 @@ def reconcile_transfer(
     else:
         job.status = TransferStatus.RECONCILIATION_FAILED
         job.last_error_code = outcome.upper()
+        # Ambiguous or missing observations are not verified identity mismatches. Leave
+        # classifier match inputs unset and let the explicit outcome classify as unknown.
+        classification = classify_incident(
+            IncidentClassificationInput(
+                domain="pacs",
+                source_entity_type="transfer_job",
+                source_entity_id=str(job.id),
+                error_code=outcome.upper(),
+                error_message="Deterministic reconciliation mismatch",
+                transfer_status=job.status.value,
+                identifiers_match=identifiers_match if outcome != "missing_or_ambiguous" else None,
+                instance_counts_match=counts_match if outcome != "missing_or_ambiguous" else None,
+            )
+        )
+        record_transfer_failure_incident(
+            session,
+            job,
+            classification,
+            redacted_error="redacted transfer failure",
+            actor_id=actor_id,
+            evidence=reconciliation_evidence,
+        )
     append_audit_event(
         session,
         actor=AuditActor("system", actor_id),
@@ -470,7 +503,13 @@ def reconcile_transfer(
         request_id=job.idempotency_key,
         success=outcome == "matched",
         policy_version="pacs-reconciliation-v1",
-        after_state={"outcome": outcome, "identifiers_match": identifiers_match},
+        after_state={
+            "outcome": outcome,
+            "identifiers_match": identifiers_match,
+            "instance_counts_match": counts_match,
+            "source_instance_count": source.instance_count if source else 0,
+            "destination_instance_count": destination.instance_count if destination else 0,
+        },
         error_code=None if outcome == "matched" else outcome.upper(),
     )
     session.flush()

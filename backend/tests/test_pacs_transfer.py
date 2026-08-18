@@ -3,7 +3,14 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.audit.models import AuditEvent
 from app.db.base import Base
+from app.incidents.classifier import IncidentCategory
+from app.incidents.models import (
+    IncidentRemediationProposal,
+    PacsIncident,
+    PacsIncidentStatus,
+)
 from app.pacs.dispatch import publish_pending_transfer_dispatches
 from app.pacs.models import (
     PacsNode,
@@ -142,6 +149,8 @@ def test_transfer_is_idempotent_executes_once_and_reconciles_matching_metadata()
         assert session.scalar(select(func.count()).select_from(TransferJob)) == 1
         assert session.scalar(select(func.count()).select_from(TransferAttempt)) == 1
         assert session.scalar(select(func.count()).select_from(ReconciliationResult)) == 1
+        assert session.scalar(select(func.count()).select_from(PacsIncident)) == 0
+        assert session.scalar(select(func.count()).select_from(IncidentRemediationProposal)) == 0
 
 
 def test_identity_mismatch_never_completes_transfer() -> None:
@@ -171,6 +180,151 @@ def test_identity_mismatch_never_completes_transfer() -> None:
         assert result.outcome == "identity_mismatch"
         assert result.identifiers_match is False
         assert job.status == TransferStatus.RECONCILIATION_FAILED
+
+
+def test_reconciliation_identity_mismatch_creates_one_open_incident() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        job, _ = setup_transfer(session)
+        source = FakePacs([metadata()])
+        destination = FakePacs([metadata(patient_id="SYN-DIFFERENT")])
+        execute_transfer(session, job.id, source, actor_id="pacs-admin-test")
+        session.commit()
+
+        reconcile_transfer(
+            session,
+            job.id,
+            source,
+            destination,
+            actor_id="pacs-admin-test",
+        )
+        session.commit()
+        reconcile_transfer(
+            session,
+            job.id,
+            source,
+            destination,
+            actor_id="pacs-admin-test",
+        )
+        session.commit()
+
+        incident = session.scalar(
+            select(PacsIncident).where(PacsIncident.transfer_job_id == job.id)
+        )
+        assert incident is not None
+        assert incident.category == IncidentCategory.IDENTITY_MISMATCH.value
+        assert incident.severity == "critical"
+        assert incident.status == PacsIncidentStatus.OPEN
+        assert incident.approval_state.value == "pending"
+        assert incident.requires_human_review is True
+        assert incident.retry_candidate is False
+        assert incident.rule_code == "IDENTITY_MISMATCH_REQUIRES_HUMAN"
+        assert incident.last_failure_count == 2
+        assert incident.evidence_json["reconciliation_outcome"] == "identity_mismatch"
+        assert incident.evidence_json["reconciliation_identifiers_match"] is False
+        assert incident.evidence_json["reconciliation_instance_counts_match"] is True
+        assert incident.evidence_json["reconciliation_source_instance_count"] == 2
+        assert incident.evidence_json["reconciliation_destination_instance_count"] == 2
+        assert "patient_id" not in incident.evidence_json
+        assert "study_instance_uid" not in incident.evidence_json
+        assert "pixel_data" not in incident.evidence_json
+        assert session.scalar(select(func.count()).select_from(PacsIncident)) == 1
+        assert session.scalar(select(func.count()).select_from(IncidentRemediationProposal)) == 0
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.action == "pacs.incident.created")
+            )
+            == 1
+        )
+
+
+def test_reconciliation_count_mismatch_creates_one_open_incident() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        job, _ = setup_transfer(session)
+        source = FakePacs([metadata()])
+        destination = FakePacs([metadata(instances=3)])
+        execute_transfer(session, job.id, source, actor_id="pacs-admin-test")
+        session.commit()
+
+        result = reconcile_transfer(
+            session,
+            job.id,
+            source,
+            destination,
+            actor_id="pacs-admin-test",
+        )
+        session.commit()
+
+        assert result.outcome == "count_mismatch"
+        incident = session.scalar(
+            select(PacsIncident).where(PacsIncident.transfer_job_id == job.id)
+        )
+        assert incident is not None
+        assert incident.category == IncidentCategory.COUNT_MISMATCH.value
+        assert incident.severity == "high"
+        assert incident.status == PacsIncidentStatus.OPEN
+        assert incident.requires_human_review is True
+        assert incident.retry_candidate is False
+        assert incident.rule_code == "COUNT_MISMATCH_REQUIRES_HUMAN"
+        assert incident.evidence_json["reconciliation_outcome"] == "count_mismatch"
+        assert incident.evidence_json["reconciliation_identifiers_match"] is True
+        assert incident.evidence_json["reconciliation_instance_counts_match"] is False
+        assert session.scalar(select(func.count()).select_from(PacsIncident)) == 1
+        assert session.scalar(select(func.count()).select_from(IncidentRemediationProposal)) == 0
+
+
+def test_reconciliation_missing_or_ambiguous_evidence_creates_one_open_unknown_incident() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        job, _ = setup_transfer(session)
+        source = FakePacs([metadata()])
+        destination = FakePacs([])
+        execute_transfer(session, job.id, source, actor_id="pacs-admin-test")
+        session.commit()
+
+        result = reconcile_transfer(
+            session,
+            job.id,
+            source,
+            destination,
+            actor_id="pacs-admin-test",
+        )
+        session.commit()
+
+        assert result.outcome == "missing_or_ambiguous"
+        incident = session.scalar(
+            select(PacsIncident).where(PacsIncident.transfer_job_id == job.id)
+        )
+        assert incident is not None
+        assert incident.category == IncidentCategory.UNKNOWN.value
+        assert incident.severity == "high"
+        assert incident.status == PacsIncidentStatus.OPEN
+        assert incident.requires_human_review is True
+        assert incident.retry_candidate is False
+        assert incident.rule_code == "UNKNOWN_FAILURE_REQUIRES_HUMAN"
+        assert incident.evidence_json["reconciliation_outcome"] == "missing_or_ambiguous"
+        assert incident.evidence_json["reconciliation_identifiers_match"] is False
+        assert incident.evidence_json["reconciliation_instance_counts_match"] is False
+        assert session.scalar(select(func.count()).select_from(PacsIncident)) == 1
+        assert session.scalar(select(func.count()).select_from(IncidentRemediationProposal)) == 0
 
 
 def test_reconciliation_rejects_matching_nodes_that_drift_from_transfer_intent() -> None:

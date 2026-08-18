@@ -39,9 +39,7 @@ def enqueue_incident_persistence(
     if http_status is not None and type(http_status) is int:
         evidence_payload["http_status"] = http_status
     existing = session.scalar(
-        select(IncidentPersistenceOutbox).where(
-            IncidentPersistenceOutbox.transfer_job_id == job.id
-        )
+        select(IncidentPersistenceOutbox).where(IncidentPersistenceOutbox.transfer_job_id == job.id)
     )
     if existing is not None:
         existing.status = "pending"
@@ -105,6 +103,41 @@ def _audit_state(
     }
 
 
+_RECONCILIATION_OUTCOMES = frozenset(
+    {"identity_mismatch", "count_mismatch", "missing_or_ambiguous"}
+)
+
+
+def _bound_reconciliation_evidence(
+    evidence: dict[str, object] | None,
+) -> dict[str, object]:
+    """Keep reconciliation evidence to deterministic metadata facts only."""
+
+    if not evidence:
+        return {}
+    bounded: dict[str, object] = {}
+    outcome = evidence.get("reconciliation_outcome")
+    if type(outcome) is str and outcome in _RECONCILIATION_OUTCOMES:
+        bounded["reconciliation_outcome"] = outcome
+    for key in (
+        "reconciliation_identifiers_match",
+        "reconciliation_instance_counts_match",
+    ):
+        value = evidence.get(key)
+        if value is None or type(value) is bool:
+            bounded[key] = value
+    for key in (
+        "reconciliation_source_match_count",
+        "reconciliation_destination_match_count",
+        "reconciliation_source_instance_count",
+        "reconciliation_destination_instance_count",
+    ):
+        value = evidence.get(key)
+        if type(value) is int and 0 <= value <= 2_147_483_647:
+            bounded[key] = value
+    return bounded
+
+
 def _update_existing_incident(
     session: Session,
     existing: PacsIncident,
@@ -114,6 +147,7 @@ def _update_existing_incident(
     safe_error: str,
     actor_id: str,
     latest_attempt: int | None,
+    reconciliation_evidence: dict[str, object],
 ) -> PacsIncident:
     now = datetime.now(UTC)
     existing.category = classification.category.value
@@ -129,7 +163,8 @@ def _update_existing_incident(
     existing.resolution = None
     existing.last_failure_count += 1
     existing.updated_at = now
-    evidence = dict(existing.evidence_json)
+    evidence = dict(existing.evidence_json or {})
+    evidence.update(reconciliation_evidence)
     evidence["failure_count"] = existing.last_failure_count
     evidence["latest_attempt_number"] = latest_attempt
     evidence["latest_error_code"] = job.last_error_code
@@ -143,8 +178,7 @@ def _update_existing_incident(
         entity_type="pacs_incident",
         entity_id=str(existing.id),
         decision_reason=(
-            "Repeated deterministic transfer failure consolidated into existing "
-            "incident"
+            "Repeated deterministic transfer failure consolidated into existing incident"
         ),
         correlation_id=job.correlation_id,
         request_id=job.idempotency_key,
@@ -166,6 +200,7 @@ def record_transfer_failure_incident(
     *,
     redacted_error: str,
     actor_id: str,
+    evidence: dict[str, object] | None = None,
 ) -> PacsIncident:
     """Create or update one incident for a transfer failure.
 
@@ -175,6 +210,7 @@ def record_transfer_failure_incident(
 
     safe_error = _sanitize_failure_summary(redacted_error)
     latest_attempt = _latest_attempt_number(session, job)
+    bounded_evidence = _bound_reconciliation_evidence(evidence)
     existing = session.scalar(
         select(PacsIncident).where(PacsIncident.transfer_job_id == job.id).with_for_update()
     )
@@ -187,6 +223,7 @@ def record_transfer_failure_incident(
             safe_error=safe_error,
             actor_id=actor_id,
             latest_attempt=latest_attempt,
+            reconciliation_evidence=bounded_evidence,
         )
 
     incident = PacsIncident(
@@ -209,6 +246,7 @@ def record_transfer_failure_incident(
             "latest_error_code": job.last_error_code,
             "latest_redacted_error": safe_error,
             "transfer_status": job.status.value,
+            **bounded_evidence,
         },
         redacted_summary=safe_error,
         last_failure_count=1,
@@ -231,6 +269,7 @@ def record_transfer_failure_incident(
             safe_error=safe_error,
             actor_id=actor_id,
             latest_attempt=latest_attempt,
+            reconciliation_evidence=bounded_evidence,
         )
 
     append_audit_event(
