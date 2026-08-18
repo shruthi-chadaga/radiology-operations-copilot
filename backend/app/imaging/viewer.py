@@ -8,7 +8,7 @@ from app.pacs.models import PacsStudy
 
 def is_synthetic_study(study: PacsStudy) -> bool:
     """Require the inventory attestation before exposing a rendered preview."""
-    return study.metadata_json.get("synthetic") is True
+    return (study.metadata_json or {}).get("synthetic") is True
 
 
 def find_prior_studies(
