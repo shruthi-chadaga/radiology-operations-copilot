@@ -437,6 +437,90 @@ def test_http_401_finalization_rollback_preserves_unauthorized_classification() 
         assert incident.rule_code == "UNAUTHORIZED_ACTION_REQUIRES_HUMAN"
 
 
+def test_http_status_survives_finalization_recovery_fallback_branch() -> None:
+    """Both finalization recovery branches must retain HTTP authorization evidence."""
+    original_append_audit_event = transfer_module.append_audit_event
+
+    def fail_recovery_audits(*args: object, **kwargs: object) -> object:
+        if kwargs.get("action") in {
+            "pacs.transfer.attempted",
+            "pacs.transfer.finalization_pending",
+        }:
+            raise RuntimeError("synthetic recovery audit failure")
+        return original_append_audit_event(*args, **kwargs)
+
+    for http_status in (401, 403):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            job = setup_failed_transfer(session)
+            adapter = HttpErrorAdapter(http_status=http_status)
+            with (
+                patch(
+                    "app.pacs.transfer.append_audit_event",
+                    side_effect=fail_recovery_audits,
+                ),
+                pytest.raises(RuntimeError, match="finalization requires recovery"),
+            ):
+                execute_transfer(session, job.id, adapter, actor_id="celery-worker")
+
+            assert adapter.calls == 1
+            outbox = session.scalar(
+                select(IncidentPersistenceOutbox).where(
+                    IncidentPersistenceOutbox.transfer_job_id == job.id
+                )
+            )
+            assert outbox is not None
+            assert outbox.evidence_json["http_status"] == http_status
+            assert outbox.evidence_json["recovery"] == "transfer_finalization_audit"
+
+            from app.incidents.recovery import drain_incident_persistence_outbox
+
+            result = drain_incident_persistence_outbox(session, actor_id="outbox-worker")
+            assert result.completed == 1
+            session.commit()
+            incident = session.scalar(
+                select(PacsIncident).where(PacsIncident.transfer_job_id == job.id)
+            )
+            assert incident is not None
+            assert incident.category == IncidentCategory.UNAUTHORIZED.value
+            assert incident.severity == IncidentSeverity.CRITICAL.value
+
+
+def test_http_status_survives_incident_persistence_failure_before_finalization() -> None:
+    """A failed inline incident write must not discard adapter authorization evidence."""
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        job = setup_failed_transfer(session)
+        adapter = HttpErrorAdapter(http_status=401)
+        with (
+            patch(
+                "app.pacs.transfer.record_transfer_failure_incident",
+                side_effect=RuntimeError("synthetic incident persistence failure"),
+            ),
+            pytest.raises(RuntimeError, match="queued for recovery"),
+        ):
+            execute_transfer(session, job.id, adapter, actor_id="celery-worker")
+
+        assert adapter.calls == 1
+        outbox = session.scalar(
+            select(IncidentPersistenceOutbox).where(
+                IncidentPersistenceOutbox.transfer_job_id == job.id
+            )
+        )
+        assert outbox is not None
+        assert outbox.evidence_json["http_status"] == 401
+
+
 def test_http_403_finalization_rollback_preserves_unauthorized_classification() -> None:
     """Regression: HTTP 403 through finalization rollback must remain UNAUTHORIZED/critical."""
     engine = create_engine(

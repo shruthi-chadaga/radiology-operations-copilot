@@ -311,6 +311,7 @@ def execute_transfer(
                 job,
                 error_code=error_code,
                 redacted_error=redacted_error,
+                http_status=http_status,
                 evidence={
                     "classification_rule": classification.rule_code,
                     "attempt_number": attempt_number,
