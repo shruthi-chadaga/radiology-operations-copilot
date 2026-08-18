@@ -23,6 +23,8 @@ from app.scheduling.models import (
 
 
 def create_fixture(session: Session) -> tuple[Referral, Slot, ImagingService]:
+    now = datetime.now(UTC)
+    start = (now + timedelta(days=3)).replace(hour=9, minute=0, second=0, microsecond=0)
     patient = SyntheticPatient(
         external_patient_id="SYN-0001",
         first_name="Aster",
@@ -46,8 +48,8 @@ def create_fixture(session: Session) -> tuple[Referral, Slot, ImagingService]:
     schedule = Schedule(
         imaging_service_id=service.id,
         location_id=location.id,
-        start_date=date(2026, 8, 1),
-        end_date=date(2026, 8, 30),
+        start_date=now.date(),
+        end_date=(now + timedelta(days=30)).date(),
         status="active",
     )
     referral = Referral(
@@ -63,7 +65,6 @@ def create_fixture(session: Session) -> tuple[Referral, Slot, ImagingService]:
     )
     session.add_all([schedule, referral])
     session.flush()
-    start = datetime(2026, 8, 4, 9, tzinfo=UTC)
     slot = Slot(
         schedule_id=schedule.id,
         start_time=start,

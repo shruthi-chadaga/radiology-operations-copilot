@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -78,7 +78,7 @@ def test_reschedule_preserves_old_record_and_books_new_slot() -> None:
         old_appointment = book_appointment(
             session, booking_request(referral.id, old_slot.id, service.id)
         )
-        new_start = datetime(2026, 8, 5, 14, tzinfo=UTC)
+        new_start = old_slot.start_time + timedelta(days=1)
         new_slot = Slot(
             schedule_id=old_slot.schedule_id,
             start_time=new_start,

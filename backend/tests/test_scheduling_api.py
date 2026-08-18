@@ -25,6 +25,7 @@ from app.scheduling.models import (
 
 
 def test_scheduling_api_connects_referral_extraction_validation_ranking_and_booking() -> None:
+    now = datetime.now(UTC)
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -64,14 +65,16 @@ def test_scheduling_api_connects_referral_extraction_validation_ranking_and_book
         schedule = Schedule(
             imaging_service_id=service.id,
             location_id=location.id,
-            start_date=date(2026, 8, 1),
-            end_date=date(2026, 8, 30),
+            start_date=now.date(),
+            end_date=(now + timedelta(days=30)).date(),
             status="active",
         )
         session.add(schedule)
         session.flush()
         for index, hour in enumerate((9, 11, 14), start=1):
-            start = datetime(2026, 8, index + 3, hour, tzinfo=UTC)
+            start = (now + timedelta(days=index + 2)).replace(
+                hour=hour, minute=0, second=0, microsecond=0
+            )
             session.add(
                 Slot(
                     schedule_id=schedule.id,
