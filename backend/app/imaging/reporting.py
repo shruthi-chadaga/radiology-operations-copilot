@@ -50,13 +50,19 @@ def _next_version_number(session: Session, report: RadiologyReport) -> int:
 
 def _locked_report(session: Session, report_id: uuid.UUID) -> RadiologyReport | None:
     return session.scalar(
-        select(RadiologyReport).where(RadiologyReport.id == report_id).with_for_update()
+        select(RadiologyReport)
+        .where(RadiologyReport.id == report_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
 
 
 def _locked_report_for_study(session: Session, study_id: uuid.UUID) -> RadiologyReport | None:
     return session.scalar(
-        select(RadiologyReport).where(RadiologyReport.study_id == study_id).with_for_update()
+        select(RadiologyReport)
+        .where(RadiologyReport.study_id == study_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
 
 
