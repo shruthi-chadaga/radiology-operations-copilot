@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { z } from "zod";
 
 import { useSession } from "@/components/session-context";
@@ -130,7 +130,8 @@ export function PacsOperationsWorkspace({
   const { user, loading } = useSession();
   const role = currentRole ?? user?.role;
   const canWrite =
-    externalCanWrite ?? (role === "pacs_admin" || role === "operations_manager");
+    externalCanWrite ??
+    (role === "pacs_admin" || role === "operations_manager");
   const [nodes, setNodes] = useState(initialNodes ?? []);
   const [studies, setStudies] = useState(initialStudies ?? []);
   const [transfers, setTransfers] = useState(initialTransfers ?? []);
@@ -265,6 +266,12 @@ export function PacsOperationsWorkspace({
       destination_node_id: String(data.get("destination_node_id")),
       study_id: String(data.get("study_id")),
     };
+    if (!payload.study_id) {
+      const msg = "Select a study before queuing a transfer.";
+      setMessage(msg);
+      onMessage?.(msg);
+      return;
+    }
     const signature = JSON.stringify(payload);
     const key =
       ambiguousRequest.current?.signature === signature
@@ -382,19 +389,12 @@ export function PacsOperationsWorkspace({
                   .filter((item) => item.node_type === "destination")
                   .map((item) => [item.id, item.name])}
               />
-              <Select
-                label="Synthetic study"
-                name="study_id"
-                defaultValue={
-                  preselectedStudyId
-                    ? displayStudies.find((s) => s.id === preselectedStudyId)
-                        ?.accession_number
-                    : undefined
-                }
-                items={displayStudies.map((item) => [
-                  item.id,
-                  item.accession_number,
-                ])}
+              <TransferStudySelect
+                key={`${preselectedStudyId ?? ""}:${displayStudies
+                  .map((study) => study.id)
+                  .join(",")}`}
+                studies={displayStudies}
+                preselectedStudyId={preselectedStudyId}
               />
               <button
                 disabled={!displayStudies.length}
@@ -614,16 +614,84 @@ export function PacsOperationsWorkspace({
   );
 }
 
+function TransferStudySelect({
+  studies,
+  preselectedStudyId,
+}: {
+  studies: PacsStudy[];
+  preselectedStudyId?: string;
+}) {
+  const requestedStudyMissing =
+    preselectedStudyId !== undefined &&
+    studies.length > 0 &&
+    !studies.some((study) => study.id === preselectedStudyId);
+  const preferredStudy =
+    preselectedStudyId !== undefined
+      ? studies.find((study) => study.id === preselectedStudyId)
+      : studies[0];
+  const [selectedStudyId, setSelectedStudyId] = useState(
+    preferredStudy?.id ?? "",
+  );
+  const selectedStudy = studies.find((study) => study.id === selectedStudyId);
+
+  return (
+    <div>
+      {requestedStudyMissing && (
+        <p
+          role="alert"
+          className="mb-2 text-xs font-medium text-red-300"
+          aria-live="assertive"
+        >
+          The requested study could not be found. Select a study manually before
+          transferring.
+        </p>
+      )}
+      {selectedStudy && !requestedStudyMissing && (
+        <p aria-live="polite" className="mb-2 text-xs text-violet-200">
+          Selected synthetic study: {selectedStudy.accession_number}
+        </p>
+      )}
+      <label className="text-sm font-medium">
+        Synthetic study
+        <select
+          required
+          name="study_id"
+          value={selectedStudyId}
+          onChange={(event) => setSelectedStudyId(event.target.value)}
+          className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3"
+          aria-invalid={requestedStudyMissing}
+          aria-describedby={requestedStudyMissing ? "study-selection-error" : undefined}
+        >
+          {requestedStudyMissing && (
+            <option value="" disabled>
+              — Select a study —
+            </option>
+          )}
+          {studies.map((study) => (
+            <option key={study.id} value={study.id}>
+              {study.accession_number}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
+  );
+}
+
 function Select({
   label,
   name,
   items,
   defaultValue,
+  value,
+  onChange,
 }: {
   label: string;
   name: string;
   items: string[][];
   defaultValue?: string;
+  value?: string;
+  onChange?: (event: ChangeEvent<HTMLSelectElement>) => void;
 }) {
   return (
     <label className="text-sm font-medium">
@@ -631,7 +699,9 @@ function Select({
       <select
         required
         name={name}
-        defaultValue={defaultValue}
+        defaultValue={value === undefined ? defaultValue : undefined}
+        value={value}
+        onChange={onChange}
         className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3"
       >
         {items.map(([value, text]) => (
