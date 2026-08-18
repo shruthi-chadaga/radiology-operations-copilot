@@ -118,6 +118,7 @@ def _recover_transfer_finalization(
     desired_status: TransferStatus,
     error_code: str | None,
     redacted_error: str | None,
+    http_status: int | None,
     actor_id: str,
 ) -> TransferJob:
     """Persist explicit recovery evidence after post-call finalization fails."""
@@ -148,6 +149,7 @@ def _recover_transfer_finalization(
                 job,
                 error_code=recovery_error_code,
                 redacted_error=recovery_error,
+                http_status=http_status,
                 evidence={
                     "attempt_number": attempt_number,
                     "recovery": "transfer_finalization",
@@ -194,6 +196,7 @@ def _recover_transfer_finalization(
                 job,
                 error_code=error_code or "FINALIZATION_AUDIT_UNAVAILABLE",
                 redacted_error=redacted_error or "redacted transfer failure",
+                http_status=http_status,
                 evidence={
                     "attempt_number": attempt_number,
                     "recovery": "transfer_finalization_audit",
@@ -324,6 +327,7 @@ def execute_transfer(
                     desired_status=TransferStatus.FAILED,
                     error_code=error_code,
                     redacted_error=redacted_error,
+                    http_status=http_status,
                     actor_id=actor_id,
                 )
                 raise RuntimeError("incident recovery could not be persisted") from outbox_error
@@ -358,6 +362,7 @@ def execute_transfer(
             desired_status=desired_status if success else TransferStatus.FAILED,
             error_code=error_code or job.last_error_code,
             redacted_error=redacted_error,
+            http_status=http_status,
             actor_id=actor_id,
         )
         raise RuntimeError("transfer finalization requires recovery") from finalization_error

@@ -30,10 +30,14 @@ def enqueue_incident_persistence(
     *,
     error_code: str,
     redacted_error: str,
+    http_status: int | None = None,
     evidence: dict[str, object] | None = None,
 ) -> IncidentPersistenceOutbox:
     """Durably record that incident creation must be retried; never dispatch remediation."""
 
+    evidence_payload = dict(evidence) if evidence else {}
+    if http_status is not None and type(http_status) is int:
+        evidence_payload["http_status"] = http_status
     existing = session.scalar(
         select(IncidentPersistenceOutbox).where(
             IncidentPersistenceOutbox.transfer_job_id == job.id
@@ -43,8 +47,8 @@ def enqueue_incident_persistence(
         existing.status = "pending"
         existing.error_code = error_code[:80]
         existing.redacted_error = _sanitize_failure_summary(redacted_error)[:200]
-        if evidence:
-            existing.evidence_json = {**existing.evidence_json, **evidence}
+        if evidence_payload:
+            existing.evidence_json = {**existing.evidence_json, **evidence_payload}
         existing.attempt_count += 1
         existing.last_attempt_at = datetime.now(UTC)
         return existing
@@ -52,7 +56,7 @@ def enqueue_incident_persistence(
         transfer_job_id=job.id,
         error_code=error_code[:80],
         redacted_error=_sanitize_failure_summary(redacted_error)[:200],
-        evidence_json=evidence or {},
+        evidence_json=evidence_payload,
         status="pending",
         attempt_count=1,
         last_attempt_at=datetime.now(UTC),
