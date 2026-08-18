@@ -97,6 +97,96 @@ describe("PacsOperationsWorkspace transfer form", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows error and prevents submission when preselectedStudyId does not exist", () => {
+    render(
+      <PacsOperationsWorkspace
+        embedded
+        nodes={nodes}
+        studies={studies}
+        canWrite
+        preselectedStudyId="nonexistent-study-uuid"
+      />,
+    );
+
+    // Error message should be visible
+    expect(
+      screen.getByText(
+        "The requested study could not be found. Select a study manually before transferring.",
+      ),
+    ).toBeInTheDocument();
+
+    // Select should have the disabled placeholder option selected
+    const studySelect = screen.getByRole("combobox", {
+      name: "Synthetic study",
+    });
+    expect(studySelect).toHaveValue("");
+    expect(studySelect).toBeInvalid();
+    expect(studySelect).toHaveAttribute("aria-invalid", "true");
+
+    // The disabled placeholder should be present
+    expect(screen.getByText("— Select a study —")).toBeInTheDocument();
+  });
+
+  it("does not POST when preselectedStudyId is missing until user manually selects", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
+      if (options?.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => acceptedTransfer,
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [] }),
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <PacsOperationsWorkspace
+        embedded
+        nodes={nodes}
+        studies={studies}
+        canWrite
+        preselectedStudyId="nonexistent-study-uuid"
+      />,
+    );
+
+    const form = screen.getByRole("combobox", { name: "Synthetic study" }).closest("form")!;
+
+    // Try to submit with missing preselection - should not call fetch
+    fireEvent.submit(form);
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/pacs/transfers"),
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    // User manually selects a study
+    const studySelect = screen.getByRole("combobox", { name: "Synthetic study" });
+    fireEvent.change(studySelect, { target: { value: "study-first-uuid" } });
+
+    // Now submit should work
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/api/v1/pacs/transfers"),
+        expect.objectContaining({ body: expect.any(String) }),
+      ),
+    );
+
+    const transferRequest = fetchMock.mock.calls.find(
+      ([url, options]) =>
+        url.endsWith("/api/v1/pacs/transfers") && options?.method === "POST",
+    );
+    const submitted = JSON.parse(transferRequest?.[1].body as string) as {
+      study_id: string;
+    };
+    expect(submitted.study_id).toBe("study-first-uuid");
+    expect(submitted.study_id).not.toBe("nonexistent-study-uuid");
+  });
+
   it("preselects and submits the study UUID rather than an accession or another study", async () => {
     const fetchMock = vi
       .fn()

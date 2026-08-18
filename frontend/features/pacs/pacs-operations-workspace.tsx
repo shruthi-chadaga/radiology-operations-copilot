@@ -266,6 +266,12 @@ export function PacsOperationsWorkspace({
       destination_node_id: String(data.get("destination_node_id")),
       study_id: String(data.get("study_id")),
     };
+    if (!payload.study_id) {
+      const msg = "Select a study before queuing a transfer.";
+      setMessage(msg);
+      onMessage?.(msg);
+      return;
+    }
     const signature = JSON.stringify(payload);
     const key =
       ambiguousRequest.current?.signature === signature
@@ -615,9 +621,14 @@ function TransferStudySelect({
   studies: PacsStudy[];
   preselectedStudyId?: string;
 }) {
-  const preferredStudy = preselectedStudyId
-    ? studies.find((study) => study.id === preselectedStudyId)
-    : studies[0];
+  const requestedStudyMissing =
+    preselectedStudyId !== undefined &&
+    studies.length > 0 &&
+    !studies.some((study) => study.id === preselectedStudyId);
+  const preferredStudy =
+    preselectedStudyId !== undefined
+      ? studies.find((study) => study.id === preselectedStudyId)
+      : studies[0];
   const [selectedStudyId, setSelectedStudyId] = useState(
     preferredStudy?.id ?? "",
   );
@@ -625,18 +636,44 @@ function TransferStudySelect({
 
   return (
     <div>
-      {selectedStudy && (
+      {requestedStudyMissing && (
+        <p
+          role="alert"
+          className="mb-2 text-xs font-medium text-red-300"
+          aria-live="assertive"
+        >
+          The requested study could not be found. Select a study manually before
+          transferring.
+        </p>
+      )}
+      {selectedStudy && !requestedStudyMissing && (
         <p aria-live="polite" className="mb-2 text-xs text-violet-200">
           Selected synthetic study: {selectedStudy.accession_number}
         </p>
       )}
-      <Select
-        label="Synthetic study"
-        name="study_id"
-        value={selectedStudyId}
-        onChange={(event) => setSelectedStudyId(event.target.value)}
-        items={studies.map((study) => [study.id, study.accession_number])}
-      />
+      <label className="text-sm font-medium">
+        Synthetic study
+        <select
+          required
+          name="study_id"
+          value={selectedStudyId}
+          onChange={(event) => setSelectedStudyId(event.target.value)}
+          className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3"
+          aria-invalid={requestedStudyMissing}
+          aria-describedby={requestedStudyMissing ? "study-selection-error" : undefined}
+        >
+          {requestedStudyMissing && (
+            <option value="" disabled>
+              — Select a study —
+            </option>
+          )}
+          {studies.map((study) => (
+            <option key={study.id} value={study.id}>
+              {study.accession_number}
+            </option>
+          ))}
+        </select>
+      </label>
     </div>
   );
 }
