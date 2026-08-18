@@ -1,4 +1,7 @@
+import importlib.util
+import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -14,6 +17,7 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.incidents.classifier import IncidentClassificationInput, classify_incident
 from app.incidents.models import (
+    IncidentProposalStatus,
     IncidentRemediationApproval,
     IncidentRemediationProposal,
     PacsIncident,
@@ -146,6 +150,28 @@ def override_database(engine):
             yield session
 
     return override_db
+
+
+def test_supersession_migration_revision_and_constraint_contract() -> None:
+    migration_path = (
+        Path(__file__).parents[1] / "alembic" / "versions" / "0017_incident_proposal_superseded.py"
+    )
+    spec = importlib.util.spec_from_file_location("incident_proposal_superseded", migration_path)
+    assert spec is not None
+    assert spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    assert migration.revision == "0017_incident_proposal_superseded"
+    assert migration.down_revision == "0016_incident_approval_controls"
+    status_constraint = next(
+        constraint
+        for constraint in IncidentRemediationProposal.__table__.constraints
+        if constraint.name == "ck_incident_proposal_status"
+    )
+    assert str(status_constraint.sqltext) == (
+        "status IN ('pending', 'approved', 'rejected', 'superseded')"
+    )
 
 
 def test_proposal_and_rejection_are_persisted_and_audited() -> None:
@@ -295,6 +321,201 @@ def test_approved_record_requires_fresh_health_and_still_does_not_execute() -> N
     with Session(engine) as session:
         assert session.scalar(select(func.count()).select_from(IncidentRemediationApproval)) == 1
         assert session.scalar(select(func.count()).select_from(TransferAttempt)) == 1
+
+
+def test_new_failure_evidence_supersedes_pending_proposal_and_allows_fresh_proposal() -> None:
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        users = add_users(session)
+        incident, job = create_incident(session)
+        session.commit()
+
+    app.dependency_overrides[get_db] = override_database(engine)
+    app.dependency_overrides[get_current_user] = lambda: users[Role.PACS_ADMIN]
+    try:
+        client = TestClient(app)
+        first_response = client.post(
+            f"/api/v1/incidents/{incident.id}/proposals",
+            json={"requested_action": "RETRY_TRANSFER", "rationale": "Review first outage"},
+        )
+        assert first_response.status_code == 201
+        first_proposal_id = first_response.json()["id"]
+
+        with Session(engine) as session:
+            saved_job = session.get(TransferJob, job.id)
+            assert saved_job is not None
+            record_transfer_failure_incident(
+                session,
+                saved_job,
+                connectivity_classification(),
+                redacted_error="DestinationUnavailable: transfer request failed",
+                actor_id="worker",
+            )
+            session.commit()
+            stale = session.get(IncidentRemediationProposal, uuid.UUID(first_proposal_id))
+            assert stale is not None
+            assert stale.status == IncidentProposalStatus.SUPERSEDED
+            supersession = session.scalar(
+                select(AuditEvent).where(
+                    AuditEvent.action == "pacs.incident.proposal.superseded",
+                    AuditEvent.entity_id == first_proposal_id,
+                )
+            )
+            assert supersession is not None
+            assert supersession.before_state == {
+                "incident_id": str(incident.id),
+                "proposal_id": first_proposal_id,
+                "status": "pending",
+                "failure_count": 1,
+            }
+            assert supersession.after_state == {
+                "incident_id": str(incident.id),
+                "proposal_id": first_proposal_id,
+                "status": "superseded",
+                "failure_count": 2,
+                "execution_authorized": False,
+                "approval_is_not_execution": True,
+            }
+
+        app.dependency_overrides[get_current_user] = lambda: users[Role.OPERATIONS_MANAGER]
+        for action in ("approve", "reject"):
+            stale_decision = client.post(
+                f"/api/v1/incidents/proposals/{first_proposal_id}/{action}",
+                json={"decision_reason": "Stale proposal must remain inactive"},
+            )
+            assert stale_decision.status_code == 409
+            assert stale_decision.json()["detail"] == "PROPOSAL_ALREADY_DECIDED"
+
+        app.dependency_overrides[get_current_user] = lambda: users[Role.PACS_ADMIN]
+        fresh_response = client.post(
+            f"/api/v1/incidents/{incident.id}/proposals",
+            json={"requested_action": "RETRY_TRANSFER", "rationale": "Review latest outage"},
+        )
+        assert fresh_response.status_code == 201
+        assert fresh_response.json()["status"] == IncidentProposalStatus.PENDING.value
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_new_failure_evidence_supersedes_approved_proposal_without_rewriting_approval() -> None:
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        users = add_users(session)
+        incident, job = create_incident(session)
+        destination_node = session.get(PacsNode, job.destination_node_id)
+        assert destination_node is not None
+        destination_node.last_health_status = "healthy"
+        destination_node.last_health_at = datetime.now(UTC)
+        session.commit()
+
+    enabled_settings = get_settings().model_copy(update={"enable_auto_retry": True})
+    app.dependency_overrides[get_db] = override_database(engine)
+    app.dependency_overrides[get_current_user] = lambda: users[Role.PACS_ADMIN]
+    try:
+        client = TestClient(app)
+        proposal_response = client.post(
+            f"/api/v1/incidents/{incident.id}/proposals",
+            json={"requested_action": "RETRY_TRANSFER", "rationale": "Review approved outage"},
+        )
+        assert proposal_response.status_code == 201
+        proposal_id = proposal_response.json()["id"]
+
+        app.dependency_overrides[get_current_user] = lambda: users[Role.OPERATIONS_MANAGER]
+        with patch("app.incidents.workflow.get_settings", return_value=enabled_settings):
+            approval_response = client.post(
+                f"/api/v1/incidents/proposals/{proposal_id}/approve",
+                json={"decision_reason": "Synthetic fresh health evidence"},
+            )
+        assert approval_response.status_code == 200
+        assert approval_response.json()["status"] == IncidentProposalStatus.APPROVED.value
+
+        with Session(engine) as session:
+            saved_job = session.get(TransferJob, job.id)
+            assert saved_job is not None
+            approval = session.scalar(
+                select(IncidentRemediationApproval).where(
+                    IncidentRemediationApproval.proposal_id == uuid.UUID(proposal_id)
+                )
+            )
+            assert approval is not None
+            approval_snapshot = {
+                "id": approval.id,
+                "approver_id": approval.approver_id,
+                "approver_role": approval.approver_role,
+                "decision": approval.decision,
+                "decision_reason": approval.decision_reason,
+                "policy_snapshot": dict(approval.policy_snapshot),
+                "created_at": approval.created_at,
+            }
+            transfer_attempt_count = session.scalar(
+                select(func.count()).select_from(TransferAttempt)
+            )
+            record_transfer_failure_incident(
+                session,
+                saved_job,
+                connectivity_classification(),
+                redacted_error="DestinationUnavailable: transfer request failed",
+                actor_id="worker",
+            )
+            session.commit()
+            stale = session.get(IncidentRemediationProposal, uuid.UUID(proposal_id))
+            assert stale is not None
+            assert stale.status == IncidentProposalStatus.SUPERSEDED
+            approval = session.scalar(
+                select(IncidentRemediationApproval).where(
+                    IncidentRemediationApproval.proposal_id == stale.id
+                )
+            )
+            assert approval is not None
+            assert {
+                "id": approval.id,
+                "approver_id": approval.approver_id,
+                "approver_role": approval.approver_role,
+                "decision": approval.decision,
+                "decision_reason": approval.decision_reason,
+                "policy_snapshot": dict(approval.policy_snapshot),
+                "created_at": approval.created_at,
+            } == approval_snapshot
+            assert (
+                session.scalar(select(func.count()).select_from(IncidentRemediationApproval)) == 1
+            )
+            assert (
+                session.scalar(select(func.count()).select_from(TransferAttempt))
+                == transfer_attempt_count
+            )
+            supersession = session.scalar(
+                select(AuditEvent).where(
+                    AuditEvent.action == "pacs.incident.proposal.superseded",
+                    AuditEvent.entity_id == proposal_id,
+                )
+            )
+            assert supersession is not None
+            assert supersession.before_state == {
+                "incident_id": str(incident.id),
+                "proposal_id": proposal_id,
+                "status": "approved",
+                "failure_count": 1,
+            }
+            assert supersession.after_state == {
+                "incident_id": str(incident.id),
+                "proposal_id": proposal_id,
+                "status": "superseded",
+                "failure_count": 2,
+                "execution_authorized": False,
+                "approval_is_not_execution": True,
+            }
+
+        app.dependency_overrides[get_current_user] = lambda: users[Role.PACS_ADMIN]
+        fresh_response = client.post(
+            f"/api/v1/incidents/{incident.id}/proposals",
+            json={"requested_action": "RETRY_TRANSFER", "rationale": "Review changed evidence"},
+        )
+        assert fresh_response.status_code == 201
+        assert fresh_response.json()["status"] == IncidentProposalStatus.PENDING.value
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_outbox_drain_persists_evidence_with_bounded_retry_and_no_adapter_call() -> None:

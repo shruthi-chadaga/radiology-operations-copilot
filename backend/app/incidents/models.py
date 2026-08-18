@@ -39,6 +39,7 @@ class IncidentProposalStatus(StrEnum):
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
+    SUPERSEDED = "superseded"
 
 
 class IncidentApprovalDecision(StrEnum):
@@ -130,7 +131,7 @@ class IncidentRemediationProposal(Base):
             name="ck_incident_proposal_action",
         ),
         CheckConstraint(
-            "status IN ('pending', 'approved', 'rejected')",
+            "status IN ('pending', 'approved', 'rejected', 'superseded')",
             name="ck_incident_proposal_status",
         ),
     )

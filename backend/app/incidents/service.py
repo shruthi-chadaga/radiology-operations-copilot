@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.audit.service import AuditActor, append_audit_event
 from app.incidents.classifier import IncidentClassificationResult
 from app.incidents.models import (
+    IncidentProposalStatus,
+    IncidentRemediationProposal,
     PacsIncident,
     PacsIncidentApprovalState,
     PacsIncidentStatus,
@@ -138,6 +140,60 @@ def _bound_reconciliation_evidence(
     return bounded
 
 
+def _supersede_active_proposals(
+    session: Session,
+    incident: PacsIncident,
+    *,
+    actor_id: str,
+    job: TransferJob,
+    failure_count: int,
+    now: datetime,
+) -> None:
+    proposals = session.scalars(
+        select(IncidentRemediationProposal)
+        .where(
+            IncidentRemediationProposal.incident_id == incident.id,
+            IncidentRemediationProposal.status.in_(
+                [IncidentProposalStatus.PENDING, IncidentProposalStatus.APPROVED]
+            ),
+        )
+        .with_for_update()
+    )
+    for proposal in proposals:
+        previous_status = proposal.status.value
+        proposal.status = IncidentProposalStatus.SUPERSEDED
+        proposal.decided_at = now
+        append_audit_event(
+            session,
+            actor=AuditActor("system", actor_id),
+            action="pacs.incident.proposal.superseded",
+            entity_type="incident_remediation_proposal",
+            entity_id=str(proposal.id),
+            decision_reason=(
+                "New transfer failure evidence invalidated the proposal; historical approval "
+                "evidence remains unchanged"
+            ),
+            correlation_id=job.correlation_id,
+            request_id=job.idempotency_key,
+            success=True,
+            policy_version="pacs-incident-v1",
+            before_state={
+                "incident_id": str(incident.id),
+                "proposal_id": str(proposal.id),
+                "status": previous_status,
+                "failure_count": failure_count - 1,
+            },
+            after_state={
+                "incident_id": str(incident.id),
+                "proposal_id": str(proposal.id),
+                "status": proposal.status.value,
+                "failure_count": failure_count,
+                "execution_authorized": False,
+                "approval_is_not_execution": True,
+            },
+        )
+
+
 def _update_existing_incident(
     session: Session,
     existing: PacsIncident,
@@ -162,6 +218,14 @@ def _update_existing_incident(
     existing.resolved_by = None
     existing.resolution = None
     existing.last_failure_count += 1
+    _supersede_active_proposals(
+        session,
+        existing,
+        actor_id=actor_id,
+        job=job,
+        failure_count=existing.last_failure_count,
+        now=now,
+    )
     existing.updated_at = now
     evidence = dict(existing.evidence_json or {})
     evidence.update(reconciliation_evidence)
