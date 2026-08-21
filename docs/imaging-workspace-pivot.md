@@ -83,6 +83,16 @@ The reporting workflow is implemented for authorized imaging roles:
 - Worklist report status follows draft, finalized, and corrected states deterministically.
 - Every draft save, finalization, rejection, and correction is audited.
 
+## Share allowlist status: delivered
+
+Sharing of finalized reports is implemented as an explicit, auditable, revocable allowlist:
+
+- Operators allowlist a recipient by label; the entry carries a mandatory expiry (1–336 hours).
+- The recipient token is generated once at creation, shown exactly once in the UI, and only ever stored as a SHA-256 hash.
+- `POST /api/v1/imaging/shares/resolve` lets a recipient exchange the token for a bounded view of the finalized report text — no patient identifiers, study metadata, or images are included.
+- Resolution fails closed: expired, revoked, unknown tokens, and reports that have left the finalized state (e.g., correction pending) all return an identical 403 with no oracle distinguishing them.
+- Revocation takes effect immediately and is audited (`imaging.share.created` / `imaging.share.revoked`), as is creation.
+
 ## Safety boundary
 
 This product still does not interpret images, diagnose, measure anatomy, modify pixels, delete DICOM, merge patients, generate report text by automation, email patients, write to an EHR, execute remediation from an approval, or make clinical recommendations. Report finalization is a human action recorded with full audit evidence; no automated actor may finalize or alter authored report content. The synthetic viewer is a rendered-preview surface for workflow demonstration only, and every recovery path remains bounded and human-approved before any retry would ever be considered.
