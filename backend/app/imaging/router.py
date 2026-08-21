@@ -12,6 +12,7 @@ from app.audit.service import AuditActor, append_audit_event
 from app.auth.dependencies import get_current_user
 from app.auth.models import Role, User
 from app.db.session import get_db
+from app.imaging.delivery import ShareDeliveryError, rotate_and_send_share_link
 from app.imaging.models import (
     ImagingPriority,
     ImagingWorklistItem,
@@ -19,6 +20,7 @@ from app.imaging.models import (
     RadiologyReportShare,
     RadiologyReportShareStatus,
     RadiologyReportVersion,
+    ReportStatus,
 )
 from app.imaging.reporting import (
     ReportWorkflowError,
@@ -40,6 +42,7 @@ from app.imaging.schemas import (
     ShareCreatedResponse,
     ShareCreateRequest,
     SharedReportResponse,
+    ShareEmailRequest,
     SharePage,
     ShareResolveRequest,
     ShareResponse,
@@ -468,11 +471,21 @@ def _audit_share(
     reason: str,
     extra_state: dict[str, str] | None = None,
 ) -> None:
+    status_value = (
+        share.status
+        if isinstance(share.status, RadiologyReportShareStatus)
+        else RadiologyReportShareStatus(share.status)
+    )
+    expires_at = (
+        share.expires_at.isoformat()
+        if hasattr(share.expires_at, "isoformat")
+        else str(share.expires_at)
+    )
     after_state = {
         "report_id": str(share.report_id),
         "recipient_label": share.recipient_label,
-        "status": share.status.value,
-        "expires_at": share.expires_at.isoformat(),
+        "status": status_value.value,
+        "expires_at": expires_at,
         "raw_token_stored": False,
     }
     if extra_state:
@@ -581,3 +594,127 @@ def resolve_shared_report(
         )
     bounded = shared_report_payload(db, share)
     return SharedReportResponse(**bounded)
+
+
+@router.post("/reports/shares/{share_id}/email", response_model=ShareResponse)
+def email_report_share(
+    share_id: uuid.UUID,
+    payload: ShareEmailRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ShareResponse:
+    """Email a fresh share link; rotating the token invalidates the old one."""
+    _authorize(user, write=True)
+    share = db.scalar(
+        select(RadiologyReportShare)
+        .where(RadiologyReportShare.id == share_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if share is None:
+        raise HTTPException(status_code=404, detail="Share not found")
+    try:
+        rotate_and_send_share_link(db, share=share, recipient_email=payload.recipient_email)
+    except ShareDeliveryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    _audit_share(
+        db,
+        user,
+        action="imaging.share.emailed",
+        share=share,
+        reason="Share link emailed; previous token rotated and invalidated",
+        extra_state={"recipient_email_domain": payload.recipient_email.split("@")[-1]},
+    )
+    db.commit()
+    db.refresh(share)
+    return _share_response(share)
+
+
+def _fhir_diagnostic_report(db: Session, report: RadiologyReport) -> dict[str, object]:
+    """Build a mock FHIR DiagnosticReport from the finalized authored report."""
+    study = db.get(PacsStudy, report.study_id)
+    versions = list(
+        db.scalars(
+            select(RadiologyReportVersion)
+            .where(RadiologyReportVersion.report_id == report.id)
+            .order_by(RadiologyReportVersion.version_number)
+        )
+    )
+    current = next(
+        (
+            version
+            for version in reversed(versions)
+            if version.version_number == report.current_version_number
+        ),
+        None,
+    )
+    return {
+        "resourceType": "DiagnosticReport",
+        "id": str(report.id),
+        "meta": {
+            "tag": [
+                {"system": "radiology-operations-copilot", "code": "synthetic"},
+                {
+                    "system": "radiology-operations-copilot",
+                    "code": "mock-export",
+                },
+            ]
+        },
+        "status": "final",
+        "code": {
+            "coding": [
+                {
+                    "system": "http://loinc.org",
+                    "code": "18748-4",
+                    "display": "Diagnostic imaging study",
+                }
+            ]
+        },
+        "subject": {"reference": f"Patient/{study.patient_id if study else 'unknown'}"},
+        "effectiveDateTime": report.finalized_at.isoformat() if report.finalized_at else None,
+        "issued": report.updated_at.isoformat(),
+        "performer": [{"display": f"Synthetic author {report.finalized_by or 'unknown'}"}],
+        "conclusion": current.impression if current else "",
+        "presentedForm": [
+            {
+                "contentType": "text/plain",
+                "data": current.findings if current else "",
+            }
+        ],
+    }
+
+
+@router.get("/reports/{report_id}/fhir")
+def export_report_fhir(
+    report_id: uuid.UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    """Mock FHIR DiagnosticReport export; synthetic-only, no external calls."""
+    _authorize(user)
+    report = db.get(RadiologyReport, report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if report.status != ReportStatus.FINALIZED:
+        raise HTTPException(
+            status_code=409,
+            detail="Only a finalized report can be exported",
+        )
+    append_audit_event(
+        db,
+        actor=AuditActor("user", str(user.id)),
+        action="imaging.report.fhir_exported",
+        entity_type="radiology_report",
+        entity_id=str(report.id),
+        decision_reason="Mock FHIR DiagnosticReport exported for demonstration",
+        correlation_id=f"report-{report.id}",
+        request_id=f"report-{report.id}",
+        success=True,
+        after_state={
+            "status": report.status.value,
+            "version": report.current_version_number,
+            "mock": True,
+        },
+    )
+    db.commit()
+    return _fhir_diagnostic_report(db, report)

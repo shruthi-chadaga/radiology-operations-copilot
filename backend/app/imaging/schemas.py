@@ -1,5 +1,6 @@
 """Strict Imaging Workspace metadata and authored-report contracts."""
 
+import re
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -198,3 +199,17 @@ class SharedReportResponse(BaseModel):
     findings: str
     impression: str
     expires_at: str
+
+
+class ShareEmailRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recipient_email: str = Field(min_length=3, max_length=254)
+
+    @field_validator("recipient_email")
+    @classmethod
+    def recipient_email_must_be_well_formed(cls, value: str) -> str:
+        # Pragmatic pattern; permissive enough for synthetic .local addresses.
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value.strip()):
+            raise ValueError("recipient_email must be a valid email address")
+        return value.strip().lower()

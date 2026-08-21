@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     operations_manager_demo_password: str
     auditor_demo_password: str
     system_admin_demo_password: str
+    smtp_host: str = "mailhog"
+    smtp_port: int = Field(default=1025, ge=1, le=65535)
 
     @field_validator("max_auto_retries")
     @classmethod

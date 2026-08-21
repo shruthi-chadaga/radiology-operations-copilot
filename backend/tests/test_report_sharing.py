@@ -5,6 +5,7 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
@@ -436,5 +437,151 @@ def test_resolution_fails_closed_when_report_leaves_finalized_state() -> None:
         response = client.post("/api/v1/imaging/shares/resolve", json={"token": created["token"]})
         assert response.status_code == 403
         assert response.json()["detail"] == "Share link is not valid"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_email_share_rotates_token_and_sends_exactly_one_message() -> None:
+    import_full_metadata()
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        users = {
+            Role.PACS_ADMIN: User(
+                email="pacs_admin@example.local",
+                display_name="pacs_admin",
+                password_hash="not-used",
+                role=Role.PACS_ADMIN,
+            )
+        }
+        session.add_all(users.values())
+        report = _seed_report(session)
+        session.commit()
+
+    _override_env(engine, users[Role.PACS_ADMIN])
+    try:
+        client = TestClient(app)
+        created = client.post(
+            f"/api/v1/imaging/reports/{report.id}/shares",
+            json={"recipient_label": "Mail clinic", "expires_in_hours": 24},
+        ).json()
+        original_token = created["token"]
+
+        sent: list[tuple[str, str, str]] = []
+
+        class FakeSMTP:
+            def __init__(self, host: str, port: int, timeout: float) -> None:
+                self.host = host
+                self.port = port
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def send_message(self, message):  # type: ignore[no-untyped-def]
+                sent.append((message["From"], message["To"], message.get_content()))
+
+        with patch("app.imaging.delivery.smtplib.SMTP", FakeSMTP):
+            emailed = client.post(
+                f"/api/v1/imaging/reports/shares/{created['id']}/email",
+                json={"recipient_email": "clinic@example.local"},
+            )
+        assert emailed.status_code == 200
+
+        # Exactly one message to the requested recipient, containing a link.
+        assert len(sent) == 1
+        sender, recipient, body = sent[0]
+        assert recipient == "clinic@example.local"
+        assert "/share/" in body
+
+        # Rotation: the old token is dead; its value never appears in the mail
+        # body or anywhere in audit evidence for this share.
+        assert original_token not in body
+        stale = client.post("/api/v1/imaging/shares/resolve", json={"token": original_token})
+        assert stale.status_code == 403
+
+        with Session(engine) as s:
+            actions = set(
+                s.scalars(
+                    select(AuditEvent.action).where(
+                        AuditEvent.entity_type == "radiology_report_share"
+                    )
+                )
+            )
+            assert "imaging.share.emailed" in actions
+            events = s.scalars(
+                select(AuditEvent).where(AuditEvent.action == "imaging.share.emailed")
+            ).all()
+            for event in events:
+                blob = json.dumps({"before": event.before_state, "after": event.after_state})
+                assert original_token not in blob
+
+        # Invalid recipient address fails schema validation.
+        bad = client.post(
+            f"/api/v1/imaging/reports/shares/{created['id']}/email",
+            json={"recipient_email": "not-an-email"},
+        )
+        assert bad.status_code == 422
+
+        # Revoked shares cannot be emailed.
+        second = client.post(
+            f"/api/v1/imaging/reports/{report.id}/shares",
+            json={"recipient_label": "Second clinic", "expires_in_hours": 24},
+        ).json()
+        client.delete(f"/api/v1/imaging/reports/shares/{second['id']}")
+        revoked_email = client.post(
+            f"/api/v1/imaging/reports/shares/{second['id']}/email",
+            json={"recipient_email": "clinic@example.local"},
+        )
+        assert revoked_email.status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_fhir_export_returns_mock_diagnostic_report() -> None:
+    import_full_metadata()
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        users = {
+            role: User(
+                email=f"{role.value}@example.local",
+                display_name=role.value,
+                password_hash="not-used",
+                role=role,
+            )
+            for role in (Role.PACS_ADMIN, Role.AUDITOR)
+        }
+        session.add_all(users.values())
+        report = _seed_report(session)
+        session.commit()
+
+    _override_env(engine, users[Role.PACS_ADMIN])
+    try:
+        client = TestClient(app)
+
+        # Auditor (read-only role) may export.
+        app.dependency_overrides[get_current_user] = lambda: users[Role.AUDITOR]
+        exported = client.get(f"/api/v1/imaging/reports/{report.id}/fhir")
+        assert exported.status_code == 200
+        bundle = exported.json()
+        assert bundle["resourceType"] == "DiagnosticReport"
+        assert bundle["status"] == "final"
+        assert bundle["conclusion"] == "Synthetic impression text"
+        assert bundle["subject"]["reference"] == "Patient/SYN-SHARE"
+        tags = bundle["meta"]["tag"]
+        assert any(tag.get("code") == "synthetic" for tag in tags)
+
+        # Non-finalized reports are refused deterministically.
+        app.dependency_overrides[get_current_user] = lambda: users[Role.PACS_ADMIN]
+        with Session(engine) as s:
+            row = s.get(RadiologyReport, report.id)
+            assert row is not None
+            row.status = ReportStatus.CORRECTION_PENDING
+            s.commit()
+        pending_export = client.get(f"/api/v1/imaging/reports/{report.id}/fhir")
+        assert pending_export.status_code == 409
     finally:
         app.dependency_overrides.clear()
