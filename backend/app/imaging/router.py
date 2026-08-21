@@ -59,6 +59,7 @@ from app.imaging.sharing import (
     shared_report_payload,
 )
 from app.imaging.viewer import find_prior_studies, first_instance_id, is_synthetic_study
+from app.imaging.worklist_service import list_modality_worklist
 from app.pacs.adapter import PacsAdapter
 from app.pacs.dependencies import get_pacs_adapters
 from app.pacs.models import PacsNode, PacsStudy
@@ -718,3 +719,95 @@ def export_report_fhir(
     )
     db.commit()
     return _fhir_diagnostic_report(db, report)
+
+
+@router.get("/modality-worklist")
+def get_modality_worklist(
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    modality: str | None = None,
+    window_hours: int = 72,
+) -> dict[str, object]:
+    """DICOM MWL C-FIND equivalent over scheduled, not-yet-acquired orders."""
+    _authorize(user, write=True)
+    try:
+        entries = list_modality_worklist(db, modality=modality, window_hours=window_hours)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "resource_type": "modality_worklist",
+        "items": [
+            {
+                "accession_number": entry.accession_number,
+                "external_patient_id": entry.external_patient_id,
+                "patient_name": entry.patient_name,
+                "patient_birth_date": entry.patient_birth_date,
+                "patient_sex": entry.patient_sex,
+                "modality": entry.modality,
+                "requested_procedure_code": entry.requested_procedure_code,
+                "requested_procedure_description": entry.requested_procedure_description,
+                "study_instance_uid": entry.study_instance_uid,
+                "scheduled_start": entry.scheduled_start.isoformat(),
+                "appointment_id": str(entry.appointment_id),
+                "order_id": str(entry.order_id),
+            }
+            for entry in entries
+        ],
+    }
+
+
+_QIDO_TAG_BY_FIELD = {
+    "study_instance_uid": "0020000D",
+    "accession_number": "00080050",
+    "patient_id": "00100020",
+    "modality": "00080060",
+    "study_date": "00080020",
+    "study_description": "00081030",
+    "patient_name": "00100010",
+    "series_count": "00201206",
+    "instance_count": "00201208",
+}
+
+
+@router.get("/dicom/studies")
+def query_studies_dicomweb_style(
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    Modality: str | None = None,
+    PatientID: str | None = None,
+    AccessionNumber: str | None = None,
+    StudyDate: str | None = None,
+) -> list[dict[str, object]]:
+    """QIDO-RS-shaped study-level query over the synthetic PACS inventory.
+
+    Read-only, metadata-only, authenticated; mirrors DICOMweb attribute names
+    so standards-aware clients can be demonstrated against the same shape.
+    """
+    _authorize(user)
+    query = select(PacsStudy).order_by(PacsStudy.study_date.desc(), PacsStudy.id)
+    if Modality:
+        query = query.where(PacsStudy.modality == Modality.strip().upper())
+    if PatientID:
+        query = query.where(PacsStudy.patient_id == PatientID.strip())
+    if AccessionNumber:
+        query = query.where(PacsStudy.accession_number == AccessionNumber.strip())
+    if StudyDate:
+        query = query.where(PacsStudy.study_date == StudyDate.strip())
+    studies = list(db.scalars(query.limit(200)))
+    rows: list[dict[str, object]] = []
+    for study in studies:
+        row: dict[str, object] = {
+            "0020000D": study.study_instance_uid,
+            "00080050": study.accession_number,
+            "00200010": f"STU-{study.accession_number}",
+            "00100020": study.patient_id,
+            "00100010": study.patient_name or "",
+            "00080060": study.modality or "",
+            "00080020": study.study_date or "",
+            "00081030": study.study_description or "",
+            "00201206": study.series_count,
+            "00201208": study.instance_count,
+            "00081190": f"/imaging/studies/{study.id}",
+        }
+        rows.append(row)
+    return rows
