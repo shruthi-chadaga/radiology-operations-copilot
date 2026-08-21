@@ -147,6 +147,7 @@ export default function PacsOpsPage() {
   const canRead = ["pacs_admin", "operations_manager", "auditor"].includes(
     role ?? "",
   );
+  const canReviewIncidents = role === "system_admin";
   const [nodes, setNodes] = useState<PacsNode[]>([]);
   const [studies, setStudies] = useState<PacsStudy[]>([]);
   const [worklist, setWorklist] = useState<WorklistItem[]>([]);
@@ -295,26 +296,32 @@ export default function PacsOpsPage() {
           Loading imaging worklist…
         </div>
       )}
-      {!sessionLoading && !canRead && (
+      {!sessionLoading && !canRead && !canReviewIncidents && (
         <div className="mt-8 rounded-2xl border border-amber-400/20 bg-amber-400/5 p-6 text-sm text-amber-100">
           Sign in with an imaging-authorized local account.
         </div>
       )}
+      {!sessionLoading && canReviewIncidents && (
+        <section
+          aria-labelledby="incident-approval-console-title"
+          className="mt-8 rounded-2xl border border-amber-400/20 bg-amber-400/5 p-6"
+        >
+          <h3
+            id="incident-approval-console-title"
+            className="text-lg font-semibold text-slate-100"
+          >
+            Incident approval console
+          </h3>
+          <p className="mt-2 max-w-3xl text-sm text-slate-400">
+            Your role is authorized to review incident approval evidence and
+            decide proposals. Imaging storage operations remain limited to
+            imaging-authorized accounts.
+          </p>
+          <IncidentReviewPanel />
+        </section>
+      )}
       {!loading && canRead && (
         <div className="mt-8 space-y-8">
-          {role === "system_admin" && (
-            <div className="rounded-2xl border border-amber-400/20 bg-amber-400/5 p-6 text-sm text-amber-100">
-              <h3 className="text-lg font-semibold text-slate-100">
-                Incident approval console
-              </h3>
-              <p className="mt-2 max-w-3xl text-slate-400">
-                Your role is authorized to review incident approval evidence and
-                decide proposals. Imaging storage operations remain limited to
-                imaging-authorized accounts.
-              </p>
-              <IncidentReviewPanel />
-            </div>
-          )}
           {selectedContext ? (
             <div className="space-y-6">
               <div className="rounded-2xl border border-violet-400/20 bg-violet-400/5 p-6">
