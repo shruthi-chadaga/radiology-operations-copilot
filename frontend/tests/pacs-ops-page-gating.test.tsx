@@ -48,6 +48,9 @@ describe("pacs-ops page role gating", () => {
     expect(
       screen.queryByText("Sign in with an imaging-authorized local account."),
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Loading imaging worklist…"),
+    ).not.toBeInTheDocument();
   });
 
   it("does not render the approval console for pacs_admin", async () => {

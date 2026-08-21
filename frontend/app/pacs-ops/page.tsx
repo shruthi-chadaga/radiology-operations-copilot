@@ -291,7 +291,7 @@ export default function PacsOpsPage() {
           </span>
         </div>
       </div>
-      {loading && (
+      {!sessionLoading && loading && canRead && (
         <div className="mt-12 text-sm text-slate-400">
           Loading imaging worklist…
         </div>
