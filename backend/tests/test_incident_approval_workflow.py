@@ -1,6 +1,6 @@
 import importlib.util
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -542,3 +542,107 @@ def test_outbox_drain_persists_evidence_with_bounded_retry_and_no_adapter_call()
         assert saved_outbox.status == "completed"
         assert saved_outbox.completed_at is not None
         assert session.scalar(select(func.count()).select_from(IncidentRemediationProposal)) == 0
+
+
+def test_outbox_drain_does_not_process_stale_preselected_row_after_rollback(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'outbox-race.db'}")
+    Base.metadata.create_all(engine)
+    created_at = datetime.now(UTC)
+    with Session(engine, expire_on_commit=False) as session:
+        first_job = setup_failed_transfer(session)
+        second_job = TransferJob(
+            source_node_id=first_job.source_node_id,
+            destination_node_id=first_job.destination_node_id,
+            study_id=first_job.study_id,
+            study_instance_uid=first_job.study_instance_uid,
+            accession_number=first_job.accession_number,
+            patient_id=first_job.patient_id,
+            expected_instance_count=first_job.expected_instance_count,
+            status=TransferStatus.FAILED,
+            retry_count=0,
+            maximum_retries=1,
+            idempotency_key="approval-transfer-idempotency-2",
+            correlation_id="approval-correlation-2",
+            last_error_code="DESTINATION_UNAVAILABLE",
+        )
+        session.add(second_job)
+        session.flush()
+        first = IncidentPersistenceOutbox(
+            transfer_job_id=first_job.id,
+            error_code="DESTINATION_UNAVAILABLE",
+            redacted_error="DestinationUnavailable: first request failed",
+            evidence_json={},
+            status="pending",
+            attempt_count=0,
+            created_at=created_at,
+        )
+        second = IncidentPersistenceOutbox(
+            transfer_job_id=second_job.id,
+            error_code="DESTINATION_UNAVAILABLE",
+            redacted_error="DestinationUnavailable: second request failed",
+            evidence_json={},
+            status="pending",
+            attempt_count=0,
+            created_at=created_at + timedelta(seconds=1),
+        )
+        session.add_all([first, second])
+        session.commit()
+
+        persistence_calls: list[str] = []
+
+        def fail_first_after_other_worker_completes_second(*args, **kwargs):  # type: ignore[no-untyped-def]
+            persistence_calls.append(str(args[1].id))
+            if len(persistence_calls) == 1:
+                with Session(engine) as concurrent_session:
+                    concurrently_completed = concurrent_session.get(
+                        IncidentPersistenceOutbox, second.id
+                    )
+                    assert concurrently_completed is not None
+                    concurrently_completed.status = "completed"
+                    concurrently_completed.completed_at = datetime.now(UTC)
+                    concurrent_session.commit()
+                raise RuntimeError("synthetic persistence failure")
+            return None
+
+        with patch(
+            "app.incidents.recovery.record_transfer_failure_incident",
+            side_effect=fail_first_after_other_worker_completes_second,
+        ):
+            result = drain_incident_persistence_outbox(session, limit=2, max_attempts=2)
+
+        assert result.selected == 1
+        assert result.deferred == 1
+        assert persistence_calls == [str(first_job.id)]
+        session.expire_all()
+        saved_second = session.get(IncidentPersistenceOutbox, second.id)
+        assert saved_second is not None
+        assert saved_second.status == "completed"
+        assert saved_second.attempt_count == 0
+
+
+def test_outbox_drain_fails_exhausted_pending_row_without_persistence_call() -> None:
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        job = setup_failed_transfer(session)
+        outbox = IncidentPersistenceOutbox(
+            transfer_job_id=job.id,
+            error_code="DESTINATION_UNAVAILABLE",
+            redacted_error="DestinationUnavailable: transfer request failed",
+            evidence_json={},
+            status="pending",
+            attempt_count=3,
+        )
+        session.add(outbox)
+        session.commit()
+
+        with patch("app.incidents.recovery.record_transfer_failure_incident") as persist:
+            result = drain_incident_persistence_outbox(session, limit=1, max_attempts=3)
+
+        persist.assert_not_called()
+        assert result.selected == 1
+        assert result.failed == 1
+        saved = session.get(IncidentPersistenceOutbox, outbox.id)
+        assert saved is not None
+        assert saved.status == "failed"
+        assert saved.attempt_count == 3

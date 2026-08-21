@@ -1,5 +1,6 @@
 """Bounded recovery worker for incident-persistence evidence."""
 
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -33,26 +34,72 @@ def drain_incident_persistence_outbox(
     limit: int = 20,
     max_attempts: int = MAX_OUTBOX_ATTEMPTS,
 ) -> OutboxDrainResult:
-    """Persist queued incident evidence without calling adapters or starting retries."""
+    """Persist queued incident evidence without calling adapters or starting retries.
+
+    Rows are claimed strictly one at a time: each row is locked, fully processed,
+    and committed before the next row is selected. Locks therefore never span a
+    commit or rollback, so concurrent workers cannot observe a preselected batch
+    of unlocked rows while this worker still holds stale ORM objects.
+    """
 
     if limit < 1 or limit > 100:
         raise ValueError("limit must be between 1 and 100")
     if max_attempts < 1 or max_attempts > MAX_OUTBOX_ATTEMPTS:
         raise ValueError("max_attempts must be between 1 and 5")
-    entries = list(
-        session.scalars(
-            select(IncidentPersistenceOutbox)
-            .where(IncidentPersistenceOutbox.status == "pending")
-            .order_by(IncidentPersistenceOutbox.created_at, IncidentPersistenceOutbox.id)
-            .limit(limit)
-            .with_for_update(skip_locked=True)
-        )
-    )
     completed = 0
     deferred = 0
     failed = 0
-    for entry in entries:
-        next_attempt = entry.attempt_count + 1
+    selected = 0
+    attempted_ids: set[uuid.UUID] = set()
+
+    while selected < limit:
+        entry = session.scalar(
+            select(IncidentPersistenceOutbox)
+            .where(IncidentPersistenceOutbox.status == "pending")
+            .order_by(IncidentPersistenceOutbox.created_at, IncidentPersistenceOutbox.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        )
+        if entry is None:
+            break
+        if entry.id in attempted_ids:
+            # A deferred row becomes eligible again immediately; leaving it for a
+            # later invocation keeps counters exact and prevents unbounded loops.
+            session.rollback()
+            break
+        selected += 1
+        attempted_ids.add(entry.id)
+        original_attempt_count = entry.attempt_count
+        if original_attempt_count >= max_attempts:
+            entry.status = "failed"
+            entry.last_attempt_at = datetime.now(UTC)
+            entry.last_error = "Max attempts exceeded"
+            append_audit_event(
+                session,
+                actor=AuditActor("system", actor_id),
+                action="pacs.incident.outbox.failed",
+                entity_type="incident_persistence_outbox",
+                entity_id=str(entry.id),
+                decision_reason=(
+                    "Pending outbox row already exhausted its attempt budget; "
+                    "incident persistence was not attempted again"
+                ),
+                correlation_id=f"outbox-{entry.id}",
+                request_id=f"outbox-{entry.id}",
+                success=False,
+                policy_version="pacs-incident-v1",
+                after_state={
+                    "status": entry.status,
+                    "attempt_count": entry.attempt_count,
+                },
+                error_code="INCIDENT_OUTBOX_MAX_ATTEMPTS_EXCEEDED",
+                error_message=entry.last_error,
+            )
+            failed += 1
+            session.commit()
+            continue
+        next_attempt = original_attempt_count + 1
         try:
             entry.attempt_count = next_attempt
             entry.last_attempt_at = datetime.now(UTC)
@@ -97,9 +144,20 @@ def drain_incident_persistence_outbox(
             completed += 1
         except Exception as exc:
             session.rollback()
-            refreshed = session.get(IncidentPersistenceOutbox, entry.id)
+            # Reacquire the same row under lock and only update it when no other
+            # worker has advanced, completed, or failed it in the meantime.
+            refreshed = session.scalar(
+                select(IncidentPersistenceOutbox)
+                .where(
+                    IncidentPersistenceOutbox.id == entry.id,
+                    IncidentPersistenceOutbox.status == "pending",
+                    IncidentPersistenceOutbox.attempt_count == original_attempt_count,
+                )
+                .with_for_update()
+            )
             if refreshed is None:
-                failed += 1
+                # Another worker owns this row now; leave its state untouched.
+                deferred += 1
                 continue
             refreshed.attempt_count = next_attempt
             refreshed.last_attempt_at = datetime.now(UTC)
@@ -131,5 +189,5 @@ def drain_incident_persistence_outbox(
                 deferred += 1
         session.commit()
     return OutboxDrainResult(
-        selected=len(entries), completed=completed, deferred=deferred, failed=failed
+        selected=selected, completed=completed, deferred=deferred, failed=failed
     )
