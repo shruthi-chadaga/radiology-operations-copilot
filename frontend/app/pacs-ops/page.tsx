@@ -20,6 +20,7 @@ import {
   type TimelineEvent,
 } from "@/features/pacs/patient-timeline";
 import { ReportEditor } from "@/features/pacs/report-editor";
+import { ReportSharePanel } from "@/features/pacs/report-share-panel";
 import { StudyDetail } from "@/features/pacs/study-detail";
 import {
   ViewerComparison,
@@ -367,6 +368,13 @@ export default function PacsOpsPage() {
                     studyId={selectedStudy.id}
                     canWrite={canWrite}
                   />
+                  {selectedContext.item.pacs_study_id && (
+                    <ReportSharePanel
+                      key={`${selectedStudy.id}-shares`}
+                      reportId={selectedContext.item.pacs_study_id}
+                      canWrite={canWrite}
+                    />
+                  )}
                   <StudyDetail
                     key={selectedStudy.id}
                     study={selectedStudy}
