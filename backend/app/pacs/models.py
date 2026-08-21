@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     Float,
@@ -159,3 +160,42 @@ class ReconciliationResult(Base):
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     evidence_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now)
+
+
+class ProcedureStepStatus(StrEnum):
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    DISCONTINUED = "discontinued"
+
+
+class ProcedureStep(Base):
+    """MPPS-lite record of one modality procedure step lifecycle.
+
+    Append-only lifecycle evidence: a step starts once and ends exactly once,
+    either completed (with performed series count) or discontinued (with a
+    human-readable reason). It never modifies DICOM data or PACS state.
+    """
+
+    __tablename__ = "procedure_steps"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('in_progress', 'completed', 'discontinued')",
+            name="ck_procedure_step_status",
+        ),
+        UniqueConstraint("accession_number", "step_number", name="uq_procedure_step_number"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    accession_number: Mapped[str] = mapped_column(String(64), index=True)
+    step_number: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[ProcedureStepStatus] = mapped_column(
+        String(24),
+        default=ProcedureStepStatus.IN_PROGRESS,
+        server_default="in_progress",
+        index=True,
+    )
+    started_by: Mapped[str] = mapped_column(String(64))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    performed_series_count: Mapped[int | None] = mapped_column(Integer, nullable=True)

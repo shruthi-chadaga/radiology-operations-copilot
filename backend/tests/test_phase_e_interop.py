@@ -407,3 +407,90 @@ def test_qido_study_query_filters_by_modality_patient_and_date() -> None:
         assert unknown_patient.json() == []
     finally:
         app.dependency_overrides.clear()
+
+
+def test_mpps_lite_procedure_step_lifecycle() -> None:
+    import_full_metadata()
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        users = {
+            Role.PACS_ADMIN: User(
+                email="pacs_admin@example.local",
+                display_name="pacs_admin",
+                password_hash="not-used",
+                role=Role.PACS_ADMIN,
+            )
+        }
+        session.add_all(users.values())
+        seed_scheduled_case(session, accession="ACC-MPPS-0001", modality="MR")
+        seed_scheduled_case(session, accession="ACC-MPPS-0002", modality="CT")
+        session.commit()
+
+    _override(engine, users[Role.PACS_ADMIN])
+    try:
+        client = TestClient(app)
+
+        # Start the procedure step (N-CREATE equivalent).
+        started = client.post("/api/v1/imaging/procedure-steps/ACC-MPPS-0001/start")
+        assert started.status_code == 200
+        step = started.json()
+        assert step["accession_number"] == "ACC-MPPS-0001"
+        assert step["status"] == "in_progress"
+        assert step["started_at"] is not None
+        assert step["ended_at"] is None
+        step_id = step["id"]
+
+        # Starting again is a deterministic conflict, not a second step.
+        again = client.post("/api/v1/imaging/procedure-steps/ACC-MPPS-0001/start")
+        assert again.status_code == 409
+
+        # Unknown accession fails with 404.
+        missing = client.post("/api/v1/imaging/procedure-steps/ACC-MPPS-XXXX/start")
+        assert missing.status_code == 404
+
+        # Complete with performed series metadata (N-SET equivalent).
+        completed = client.post(
+            f"/api/v1/imaging/procedure-steps/{step_id}/complete",
+            json={"performed_series_count": 2},
+        )
+        assert completed.status_code == 200
+        done = completed.json()
+        assert done["status"] == "completed"
+        assert done["ended_at"] is not None
+        assert done["performed_series_count"] == 2
+
+        # Completing twice is a conflict.
+        twice = client.post(
+            f"/api/v1/imaging/procedure-steps/{step_id}/complete",
+            json={"performed_series_count": 2},
+        )
+        assert twice.status_code == 409
+
+        # Discontinue path for the second case.
+        started2 = client.post("/api/v1/imaging/procedure-steps/ACC-MPPS-0002/start").json()
+        discontinued = client.post(
+            f"/api/v1/imaging/procedure-steps/{started2['id']}/discontinue",
+            json={"reason": "Synthetic patient moved during acquisition"},
+        )
+        assert discontinued.status_code == 200
+        assert discontinued.json()["status"] == "discontinued"
+        assert discontinued.json()["end_reason"] == ("Synthetic patient moved during acquisition")
+
+        # Discontinuing a completed step is a conflict.
+        disc_again = client.post(
+            f"/api/v1/imaging/procedure-steps/{step_id}/discontinue",
+            json={"reason": "Too late"},
+        )
+        assert disc_again.status_code == 409
+
+        # Listing shows the lifecycle history for the modality.
+        listed = client.get("/api/v1/imaging/procedure-steps")
+        assert listed.status_code == 200
+        rows = listed.json()["items"]
+        assert len(rows) == 2
+        statuses = {row["accession_number"]: row["status"] for row in rows}
+        assert statuses["ACC-MPPS-0001"] == "completed"
+        assert statuses["ACC-MPPS-0002"] == "discontinued"
+    finally:
+        app.dependency_overrides.clear()

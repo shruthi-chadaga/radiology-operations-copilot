@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
@@ -21,6 +22,13 @@ from app.imaging.models import (
     RadiologyReportShareStatus,
     RadiologyReportVersion,
     ReportStatus,
+)
+from app.imaging.mpps import (
+    ProcedureStepError,
+    complete_step,
+    discontinue_step,
+    list_steps,
+    start_step,
 )
 from app.imaging.reporting import (
     ReportWorkflowError,
@@ -595,6 +603,85 @@ def resolve_shared_report(
         )
     bounded = shared_report_payload(db, share)
     return SharedReportResponse(**bounded)
+
+
+@router.get("/procedure-steps")
+def list_procedure_steps(
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    """MPPS-lite lifecycle history; read-only evidence of modality activity."""
+    _authorize(user)
+    return {"resource_type": "procedure_steps", "items": list_steps(db)}
+
+
+@router.post("/procedure-steps/{accession_number}/start")
+def start_procedure_step(
+    accession_number: str,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    _authorize(user, write=True)
+    try:
+        step = start_step(db, accession_number=accession_number, started_by=str(user.id))
+    except ProcedureStepError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    db.commit()
+    return step
+
+
+class StepCompleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    performed_series_count: int = Field(ge=1, le=1000)
+
+
+@router.post("/procedure-steps/{step_id}/complete")
+def complete_procedure_step(
+    step_id: uuid.UUID,
+    payload: StepCompleteRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    _authorize(user, write=True)
+    try:
+        step = complete_step(
+            db,
+            step_id=step_id,
+            performed_series_count=payload.performed_series_count,
+            completed_by=str(user.id),
+        )
+    except ProcedureStepError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    db.commit()
+    return step
+
+
+class StepDiscontinueRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=300)
+
+
+@router.post("/procedure-steps/{step_id}/discontinue")
+def discontinue_procedure_step(
+    step_id: uuid.UUID,
+    payload: StepDiscontinueRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    _authorize(user, write=True)
+    try:
+        step = discontinue_step(
+            db,
+            step_id=step_id,
+            reason=payload.reason,
+            discontinued_by=str(user.id),
+        )
+    except ProcedureStepError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    db.commit()
+    return step
 
 
 @router.post("/reports/shares/{share_id}/email", response_model=ShareResponse)
