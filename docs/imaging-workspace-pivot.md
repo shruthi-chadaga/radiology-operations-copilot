@@ -37,7 +37,7 @@ The endpoints are restricted to PACS administrator, operations manager, and audi
 - Patient timeline for referral, appointment, and received-study events
 - Current/prior synthetic preview comparison
 - Existing study content and technical tags on demand
-- Planned reporting actions clearly marked as unavailable
+- Human-authored report drafting, finalization, and correction for authorized roles
 
 ## Secondary technical experience
 
@@ -45,6 +45,7 @@ The endpoints are restricted to PACS administrator, operations manager, and audi
 - Inventory synchronization
 - Source/destination transfers
 - Reconciliation evidence
+- Incident review with proposal, separation-of-duties approval, and bounded evidence recovery
 - Technical study counts and storage node details
 
 These remain available in the expandable **System Operations** panel for PACS administrators and operations managers.
@@ -71,15 +72,22 @@ Open System Operations only when technical action is needed
 
 Scheduler accounts continue to use `/scheduling`; scheduler login routing and backend automation remain unchanged.
 
+## Report workflow status: complete
+
+The reporting workflow is implemented for authorized imaging roles:
+
+- Clinicians author draft reports; application code and agents never generate report findings, impressions, or any diagnostic content.
+- Report versions are immutable and append-only; corrections create a new linked version instead of overwriting history.
+- Draft updates, finalization, and corrections require the expected current version number; concurrent editors receive a deterministic conflict instead of silent overwrites.
+- Finalized reports cannot be edited in place; only a correction against the finalized version is possible.
+- Worklist report status follows draft, finalized, and corrected states deterministically.
+- Every draft save, finalization, rejection, and correction is audited.
+
 ## Safety boundary
 
-This product still does not interpret images, diagnose, measure anatomy, modify pixels, delete DICOM, merge patients, finalize reports, email patients, write to an EHR, or make clinical recommendations. The Phase B viewer is a synthetic rendered-preview surface for workflow demonstration only.
+This product still does not interpret images, diagnose, measure anatomy, modify pixels, delete DICOM, merge patients, generate report text by automation, email patients, write to an EHR, execute remediation from an approval, or make clinical recommendations. Report finalization is a human action recorded with full audit evidence; no automated actor may finalize or alter authored report content. The synthetic viewer is a rendered-preview surface for workflow demonstration only, and every recovery path remains bounded and human-approved before any retry would ever be considered.
 
 ## Next phases
-
-### Phase C — Report workflow
-
-Add clinician-authored draft reports, immutable report versions, role-aware signing/finalization, correction/amendment workflow, and audit events. AI may assist with administrative structure only; it must never be treated as a diagnostic authority.
 
 ### Phase D — Share and export
 

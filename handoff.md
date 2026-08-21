@@ -60,25 +60,18 @@ Scheduling Automation remains first-class at `/scheduling`. The incident-review 
 
 ## Verification recorded
 
-- Focused incident workflow tests: **5 passed**.
-- Focused incident/classifier/policy/PACS tests: **51 passed**.
-- Backend Ruff for the new slice: **passed**.
-- Backend mypy for incidents and app registration: **passed**.
-- Frontend typecheck: **passed**.
-- Frontend tests: **17 passed**.
-- Frontend lint: passed with the existing synthetic viewer `<img>` warning.
-- Alembic head: `0016_incident_approval_controls`.
-- Live PostgreSQL migration was not run because `DATABASE_URL` was unavailable.
+- Full backend suite: **161 passed** (Ruff, mypy, and formatting clean).
+- Frontend: **33 tests passed**, typecheck, lint, Prettier, and production build clean.
+- Alembic head: `0017_incident_proposal_superseded` (single head).
+- Fresh PostgreSQL database upgraded through the full migration chain; connected synthetic Orthanc smoke and an authenticated browser smoke test against the live Compose stack passed.
+- Scheduling fixtures were converted to clock-relative dates, so the full suite no longer depends on the calendar.
 
 ## Remaining work
 
 1. Design and implement a separate audited executor for an approved retry; do not treat the current approval record as permission to execute.
 2. Re-evaluate policy and destination health immediately before any future execution.
 3. Enforce one idempotent adapter call, then reconcile before incident closure.
-4. Add PostgreSQL migration, locking, and concurrency tests.
-5. Add connected Orthanc and browser end-to-end tests.
-6. Fix the five date-sensitive scheduling fixtures in the full backend suite.
-7. Add production governance: retention, signing identity, notification, clinical review, and deployment controls.
+4. Add production governance: retention, signing identity, notification, clinical review, and deployment controls.
 
 ## Safety boundary
 
