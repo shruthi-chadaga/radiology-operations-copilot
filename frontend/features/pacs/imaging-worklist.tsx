@@ -179,7 +179,16 @@ export function ImagingWorklist({ items, onSelect }: Props) {
                 <tr
                   key={item.id}
                   onClick={() => onSelect(item)}
-                  className="cursor-pointer border-b border-slate-800/60 transition-colors last:border-0 hover:bg-slate-800/40"
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onSelect(item);
+                    }
+                  }}
+                  tabIndex={0}
+                  aria-label={`Open work item ${item.patient_name ?? item.pacs_patient_id} ${item.accession_number}`}
+                  className="cursor-pointer border-b border-slate-800/60 transition-colors last:border-0 hover:bg-slate-800/40 focus-visible:bg-slate-800/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-400/70"
                 >
                   <td className="px-4 py-4">
                     <span

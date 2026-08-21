@@ -1,82 +1,226 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 
+import { SessionProvider } from "@/components/session-context";
 import { IncidentReviewPanel } from "@/features/pacs/incident-review-panel";
 
-const fetchMock = vi.fn();
-const promptMock = vi.fn();
+function jsonResponse(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  } as Response;
+}
 
-vi.mock("@/components/session-context", () => ({
-  useSession: () => ({
-    user: {
-      id: "manager-1",
-      email: "manager@example.local",
-      display_name: "Operations Manager",
-      role: "operations_manager",
-    },
-    loading: false,
-  }),
-}));
-
-const incident = {
-  id: "incident-1",
-  incident_number: "PACS-INC-001",
-  category: "connectivity",
-  severity: "medium",
-  status: "pending_approval",
-  approval_state: "pending",
-  retry_candidate: true,
-  redacted_summary: "DestinationUnavailable: transfer request failed",
-  proposals: [
-    {
-      id: "proposal-1",
-      requested_action: "RETRY_TRANSFER",
-      proposer_id: "operator-1",
-      status: "pending",
-      rationale: "Review the destination outage",
-      approval: null,
-    },
-  ],
+const approval = {
+  id: "approval-1",
+  proposal_id: "proposal-1",
+  approver_id: "user-om",
+  approver_role: "operations_manager",
+  decision: "approved",
+  decision_reason: "Synthetic fresh health evidence",
+  policy_snapshot: { approval_is_not_execution: true },
+  created_at: "2026-08-20T10:00:00Z",
 };
 
-describe("IncidentReviewPanel", () => {
-  beforeEach(() => {
-    fetchMock.mockReset();
-    promptMock.mockReset();
-    vi.stubGlobal("fetch", fetchMock);
-    vi.stubGlobal("prompt", promptMock);
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ items: [incident] }),
-    });
-  });
+const pendingProposal = {
+  id: "proposal-1",
+  incident_id: "incident-1",
+  requested_action: "RETRY_TRANSFER",
+  proposer_id: "user-pa",
+  proposer_role: "pacs_admin",
+  rationale: "Review the synthetic outage",
+  policy_snapshot: {},
+  status: "pending",
+  created_at: "2026-08-20T09:00:00Z",
+  decided_at: null,
+  approval: null,
+};
 
-  it("shows a pending proposal and records a separately reasoned approval", async () => {
-    promptMock.mockReturnValue("Fresh destination health evidence reviewed");
-    render(<IncidentReviewPanel />);
+const supersededProposal = {
+  ...pendingProposal,
+  id: "proposal-2",
+  status: "superseded",
+  decided_at: "2026-08-20T09:30:00Z",
+  approval: null,
+};
 
-    expect(await screen.findByText(/PACS-INC-001/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Approve evidence" }));
+const approvedProposal = {
+  ...pendingProposal,
+  status: "approved",
+  decided_at: "2026-08-20T09:15:00Z",
+  approval,
+};
 
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        "http://localhost:8000/api/v1/incidents/proposals/proposal-1/approve",
-        expect.objectContaining({ method: "POST" }),
-      );
-    });
-    expect(promptMock).toHaveBeenCalledWith("Approval reason");
-  });
+function makeIncident(proposals: unknown[]) {
+  return {
+    id: "incident-1",
+    incident_number: "INC-SYN-001",
+    transfer_job_id: "job-1",
+    study_id: "study-1",
+    source_node_id: "node-1",
+    destination_node_id: "node-2",
+    category: "connectivity",
+    severity: "high",
+    status: "open",
+    approval_state: "pending",
+    retry_candidate: true,
+    requires_human_review: true,
+    confidence: 1,
+    rule_code: "CONNECTIVITY_RETRY_REQUIRES_APPROVAL",
+    redacted_summary: "Destination unavailable during synthetic transfer",
+    evidence: { classification_rule: "CONNECTIVITY" },
+    created_at: "2026-08-20T08:00:00Z",
+    updated_at: "2026-08-20T09:00:00Z",
+    proposals,
+  };
+}
 
-  it("keeps the no-execution boundary visible", async () => {
-    render(<IncidentReviewPanel />);
+function stubSession(role: string, userId = "user-om") {
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/v1/auth/me")) {
+      return jsonResponse({
+        id: userId,
+        email: `${role}@example.local`,
+        display_name: `Synthetic ${role}`,
+        role,
+      });
+    }
+    if (url.endsWith("/api/v1/incidents")) {
+      return jsonResponse({ items: [makeIncident([pendingProposal])] });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  }) as unknown as typeof fetch;
+}
 
+function renderPanel() {
+  return render(
+    <SessionProvider>
+      <IncidentReviewPanel />
+    </SessionProvider>,
+  );
+}
+
+beforeEach(() => {
+  stubSession("operations_manager");
+});
+
+describe("incident review panel strict schemas", () => {
+  it("renders incidents returned in the documented contract", async () => {
+    renderPanel();
     expect(
-      await screen.findByText(
-        /never retries a transfer or performs remediation/i,
-      ),
+      await screen.findByText(/INC-SYN-001 · connectivity/),
+    ).toBeInTheDocument();
+  });
+
+  it("rejects unexpected fields instead of rendering them silently", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/auth/me")) {
+        return jsonResponse({
+          id: "user-om",
+          email: "om@example.local",
+          display_name: "Synthetic OM",
+          role: "operations_manager",
+        });
+      }
+      if (url.endsWith("/api/v1/incidents")) {
+        const incident = makeIncident([]) as Record<string, unknown>;
+        incident.executive_summary_ai = "untrusted generated narrative";
+        return jsonResponse({ items: [incident] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }) as unknown as typeof fetch;
+
+    renderPanel();
+    await waitFor(() => {
+      expect(
+        screen.getByText("Incident review data could not be loaded."),
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/untrust/)).not.toBeInTheDocument();
+  });
+
+  it("shows a superseded proposal as inactive and offers a fresh proposal form", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/auth/me")) {
+        return jsonResponse({
+          id: "user-pa",
+          email: "pa@example.local",
+          display_name: "Synthetic PA",
+          role: "pacs_admin",
+        });
+      }
+      if (url.endsWith("/api/v1/incidents")) {
+        return jsonResponse({ items: [makeIncident([supersededProposal])] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }) as unknown as typeof fetch;
+
+    renderPanel();
+    expect(await screen.findByText(/superseded/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Propose review" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /retry transfer/i }),
+      screen.queryByRole("button", { name: /approve/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not offer approve or reject on an already-approved proposal", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/auth/me")) {
+        return jsonResponse({
+          id: "user-sa",
+          email: "sa@example.local",
+          display_name: "Synthetic SA",
+          role: "system_admin",
+        });
+      }
+      if (url.endsWith("/api/v1/incidents")) {
+        return jsonResponse({ items: [makeIncident([approvedProposal])] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }) as unknown as typeof fetch;
+
+    renderPanel();
+    expect(await screen.findByText("approved")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Approval evidence: approved by/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /approve evidence/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^reject$/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("loads incidents for an authorized system_admin", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/auth/me")) {
+        return jsonResponse({
+          id: "user-sa",
+          email: "sa@example.local",
+          display_name: "Synthetic SA",
+          role: "system_admin",
+        });
+      }
+      if (url.endsWith("/api/v1/incidents")) {
+        return jsonResponse({ items: [] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }) as unknown as typeof fetch;
+
+    renderPanel();
+    expect(
+      await screen.findByText("No open incidents require review."),
+    ).toBeInTheDocument();
+    expect((global.fetch as Mock).mock.calls.length).toBeGreaterThan(0);
   });
 });

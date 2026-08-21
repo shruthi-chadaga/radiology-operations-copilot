@@ -7,31 +7,55 @@ import { useSession } from "@/components/session-context";
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ApprovalSchema = z
-  .object({ decision: z.string(), decision_reason: z.string() })
-  .passthrough();
+  .object({
+    id: z.string(),
+    proposal_id: z.string(),
+    approver_id: z.string(),
+    approver_role: z.string(),
+    decision: z.string(),
+    decision_reason: z.string(),
+    policy_snapshot: z.record(z.string(), z.unknown()),
+    created_at: z.string(),
+  })
+  .strict();
 const ProposalSchema = z
   .object({
     id: z.string(),
+    incident_id: z.string(),
     requested_action: z.string(),
     proposer_id: z.string(),
-    status: z.string(),
+    proposer_role: z.string(),
     rationale: z.string(),
+    policy_snapshot: z.record(z.string(), z.unknown()),
+    status: z.string(),
+    created_at: z.string(),
+    decided_at: z.string().nullable(),
     approval: ApprovalSchema.nullable(),
   })
-  .passthrough();
+  .strict();
 const IncidentSchema = z
   .object({
     id: z.string(),
     incident_number: z.string(),
+    transfer_job_id: z.string(),
+    study_id: z.string(),
+    source_node_id: z.string(),
+    destination_node_id: z.string(),
     category: z.string(),
     severity: z.string(),
     status: z.string(),
     approval_state: z.string(),
     retry_candidate: z.boolean(),
+    requires_human_review: z.boolean(),
+    confidence: z.number(),
+    rule_code: z.string(),
     redacted_summary: z.string(),
+    evidence: z.record(z.string(), z.unknown()),
+    created_at: z.string(),
+    updated_at: z.string(),
     proposals: z.array(ProposalSchema),
   })
-  .passthrough();
+  .strict();
 const IncidentPageSchema = z
   .object({ items: z.array(IncidentSchema) })
   .strict();
@@ -238,11 +262,17 @@ export function IncidentReviewPanel() {
       <div className="mt-5 space-y-3">
         {visibleIncidents.map((incident) => {
           const activeProposal = incident.proposals.find(
-            (proposal) => proposal.status === "pending",
+            (proposal) =>
+              proposal.status === "pending" || proposal.status === "approved",
+          );
+          const decidedProposals = incident.proposals.filter(
+            (proposal) =>
+              proposal.status === "rejected" ||
+              proposal.status === "superseded",
           );
           const canApprove =
             canDecide(user?.role) &&
-            activeProposal &&
+            activeProposal?.status === "pending" &&
             activeProposal.proposer_id !== user?.id;
           return (
             <article
@@ -269,10 +299,20 @@ export function IncidentReviewPanel() {
               </div>
               {activeProposal && (
                 <div className="mt-3 rounded-lg border border-cyan-400/20 bg-cyan-400/5 p-3 text-xs text-slate-300">
-                  <p>
+                  <p className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-cyan-400/40 px-2 py-0.5 font-semibold uppercase tracking-wide text-cyan-200">
+                      {activeProposal.status}
+                    </span>
                     Proposal: {activeProposal.requested_action} ·{" "}
                     {activeProposal.rationale}
                   </p>
+                  {activeProposal.approval && (
+                    <p className="mt-2 text-slate-400">
+                      Approval evidence: {activeProposal.approval.decision} by{" "}
+                      {activeProposal.approval.approver_role} ·{" "}
+                      {activeProposal.approval.decision_reason}
+                    </p>
+                  )}
                   {canApprove && (
                     <div className="mt-3 flex gap-2">
                       <button
@@ -294,6 +334,22 @@ export function IncidentReviewPanel() {
                     </div>
                   )}
                 </div>
+              )}
+              {decidedProposals.length > 0 && (
+                <ul className="mt-3 space-y-1 text-xs text-slate-500">
+                  {decidedProposals.map((proposal) => (
+                    <li key={proposal.id}>
+                      Proposal {proposal.requested_action} marked{" "}
+                      {proposal.status}
+                      {proposal.decided_at
+                        ? ` · decided ${proposal.decided_at}`
+                        : ""}
+                      {proposal.approval
+                        ? ` · approval evidence preserved (${proposal.approval.decision})`
+                        : ""}
+                    </li>
+                  ))}
+                </ul>
               )}
               {!activeProposal &&
                 incident.retry_candidate &&
