@@ -30,6 +30,7 @@ from app.imaging.mpps import (
     list_steps,
     start_step,
 )
+from app.imaging.print_export import PrintExportError, export_report_pdf
 from app.imaging.reporting import (
     ReportWorkflowError,
     create_correction,
@@ -806,6 +807,29 @@ def export_report_fhir(
     )
     db.commit()
     return _fhir_diagnostic_report(db, report)
+
+
+@router.get("/reports/{report_id}/print")
+def export_report_print(
+    report_id: uuid.UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Response:
+    """Print/PDF export of a finalized report; synthetic watermark included."""
+    _authorize(user)
+    try:
+        content, _report = export_report_pdf(db, report_id=report_id, exported_by=str(user.id))
+    except PrintExportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    db.commit()
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (f'inline; filename="synthetic-report-{report_id}.pdf"'),
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/modality-worklist")

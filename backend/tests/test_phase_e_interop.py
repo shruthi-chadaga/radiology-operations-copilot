@@ -1,5 +1,6 @@
 """Phase E: Modality Worklist, DICOMweb query, and MPPS-lite behavior."""
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -492,5 +493,84 @@ def test_mpps_lite_procedure_step_lifecycle() -> None:
         statuses = {row["accession_number"]: row["status"] for row in rows}
         assert statuses["ACC-MPPS-0001"] == "completed"
         assert statuses["ACC-MPPS-0002"] == "discontinued"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _seed_report(session: Session):  # type: ignore[no-untyped-def]
+    """Seed a finalized synthetic report with one FINAL version."""
+    from app.imaging.models import (
+        RadiologyReport,
+        RadiologyReportVersion,
+        ReportStatus,
+        ReportVersionKind,
+    )
+
+    study = seed_received_study(session, accession="ACC-PRINT-0001", modality="CT")
+    report = RadiologyReport(
+        study_id=study.id,
+        status=ReportStatus.FINALIZED,
+        current_version_number=1,
+        finalized_by="user-pacs-admin",
+    )
+    session.add(report)
+    session.flush()
+    version = RadiologyReportVersion(
+        report_id=report.id,
+        version_number=1,
+        kind=ReportVersionKind.FINAL,
+        author_id="user-pacs-admin",
+        indication="Synthetic print indication",
+        findings="Synthetic findings text for print verification",
+        impression="Synthetic impression text",
+    )
+    session.add(version)
+    session.flush()
+    return report
+
+
+def test_print_pdf_export_returns_pdf_for_finalized_report() -> None:
+    import_full_metadata()
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        users = {
+            Role.PACS_ADMIN: User(
+                email="pacs_admin@example.local",
+                display_name="pacs_admin",
+                password_hash="not-used",
+                role=Role.PACS_ADMIN,
+            )
+        }
+        session.add_all(users.values())
+        report = _seed_report(session)
+        session.commit()
+
+    _override(engine, users[Role.PACS_ADMIN])
+    try:
+        client = TestClient(app)
+        exported = client.get(f"/api/v1/imaging/reports/{report.id}/print")
+        assert exported.status_code == 200
+        assert exported.headers["content-type"].startswith("application/pdf")
+        body = exported.content
+        # Real PDF magic bytes, non-trivial document.
+        assert body.startswith(b"%PDF-")
+        assert len(body) > 500
+
+        # Non-finalized reports are refused like every other export.
+        from app.imaging.models import RadiologyReport, ReportStatus
+
+        with Session(engine) as s:
+            row = s.get(RadiologyReport, report.id)
+            assert row is not None
+            row.status = ReportStatus.CORRECTION_PENDING
+            s.commit()
+        pending = client.get(f"/api/v1/imaging/reports/{report.id}/print")
+        assert pending.status_code == 409
+
+        # Unknown report 404s.
+        missing_uuid = uuid.uuid5(uuid.NAMESPACE_URL, "missing")
+        gone = client.get(f"/api/v1/imaging/reports/{missing_uuid}/print")
+        assert gone.status_code == 404
     finally:
         app.dependency_overrides.clear()
