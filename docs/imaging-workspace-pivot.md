@@ -92,6 +92,8 @@ Sharing of finalized reports is implemented as an explicit, auditable, revocable
 - `POST /api/v1/imaging/shares/resolve` lets a recipient exchange the token for a bounded view of the finalized report text — no patient identifiers, study metadata, or images are included.
 - Resolution fails closed: expired, revoked, unknown tokens, and reports that have left the finalized state (e.g., correction pending) all return an identical 403 with no oracle distinguishing them.
 - Revocation takes effect immediately and is audited (`imaging.share.created` / `imaging.share.revoked`), as is creation.
+- Emailing a share link through the local MailHog SMTP relay **rotates** the token: a fresh token is generated (only its hash stored) and the previous token stops resolving immediately. The raw token exists solely inside that one message and never in logs or audit evidence; only the recipient's email domain is audited. Audited as `imaging.share.emailed`.
+- A mock FHIR `DiagnosticReport` export is available at `GET /api/v1/imaging/reports/{report_id}/fhir` for finalized reports under read roles. It serializes the authored findings/impression into a LOINC-coded, synthetic-tagged resource for demonstration; it makes no external calls, sends nothing to any real system, and every export is audited (`imaging.report.fhir_exported`).
 
 ## Safety boundary
 
@@ -99,9 +101,9 @@ This product still does not interpret images, diagnose, measure anatomy, modify 
 
 ## Next phases
 
-### Phase D — Share and export
+### Phase D — Share and export: complete
 
-Add allowlisted internal sharing, expiring synthetic patient links through MailHog, print/PDF, and a mock FHIR `DiagnosticReport` export. Make every delivery destination explicit, auditable, and revocable where applicable.
+Allowlisted sharing, expiring token links with MailHog email delivery and rotation, and a mock FHIR `DiagnosticReport` export are implemented. Remaining optional additions: print/PDF rendering and an EHR-shaped mock receiver. Every delivery destination is explicit, audited, and revocable.
 
 ### Phase E — Acquisition and interoperability
 
