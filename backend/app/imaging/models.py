@@ -1,10 +1,18 @@
 """Persisted Imaging Workspace worklist and authored report models."""
 
+import hashlib
 import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -81,6 +89,52 @@ class ImagingWorklistItem(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.now, onupdate=datetime.now
     )
+
+
+class RadiologyReportShareStatus(StrEnum):
+    ACTIVE = "active"
+    REVOKED = "revoked"
+
+
+# Backwards-compatible alias used by earlier tests.
+ShareStatus = RadiologyReportShareStatus
+
+
+class RadiologyReportShare(Base):
+    """Allowlisted share of a finalized report; raw tokens are never stored."""
+
+    __tablename__ = "radiology_report_shares"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'revoked')",
+            name="ck_radiology_report_share_status",
+        ),
+        UniqueConstraint(
+            "report_id",
+            "recipient_label",
+            name="uq_radiology_report_share_recipient",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    report_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("radiology_reports.id"), index=True)
+    study_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pacs_studies.id"), index=True)
+    created_by: Mapped[str] = mapped_column(String(64))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    recipient_label: Mapped[str] = mapped_column(String(120))
+    status: Mapped[RadiologyReportShareStatus] = mapped_column(
+        String(16),
+        default=RadiologyReportShareStatus.ACTIVE,
+        server_default="active",
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @staticmethod
+    def hash_token(raw_token: str) -> str:
+        """Return the hex sha256 of the token; only this is ever persisted."""
+        return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
 class RadiologyReport(Base):
