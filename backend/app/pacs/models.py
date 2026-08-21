@@ -199,3 +199,30 @@ class ProcedureStep(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     end_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
     performed_series_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class MockEhrDelivery(Base):
+    """Local evidence that a finalized report was delivered to the mock EHR.
+
+    Stores bounded metadata only; report content lives in the immutable
+    report versions and is never duplicated here.
+    """
+
+    __tablename__ = "mock_ehr_deliveries"
+    __table_args__ = (
+        UniqueConstraint("report_id", name="uq_mock_ehr_delivery_report"),
+        CheckConstraint(
+            "status IN ('received')",
+            name="ck_mock_ehr_delivery_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    report_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("radiology_reports.id"))
+    study_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pacs_studies.id"), index=True)
+    receiver: Mapped[str] = mapped_column(String(40), default="mock-ehr")
+    resource_type: Mapped[str] = mapped_column(String(40), default="DiagnosticReport")
+    status: Mapped[str] = mapped_column(String(24), default="received")
+    version_number: Mapped[int] = mapped_column(Integer)
+    received_by: Mapped[str] = mapped_column(String(64))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now)

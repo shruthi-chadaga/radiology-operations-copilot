@@ -4,10 +4,11 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.audit.models import AuditEvent
 from app.db.base import Base
 
 
@@ -572,5 +573,82 @@ def test_print_pdf_export_returns_pdf_for_finalized_report() -> None:
         missing_uuid = uuid.uuid5(uuid.NAMESPACE_URL, "missing")
         gone = client.get(f"/api/v1/imaging/reports/{missing_uuid}/print")
         assert gone.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mock_ehr_receives_fhir_bundle_with_delivery_evidence() -> None:
+    import_full_metadata()
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        users = {
+            Role.PACS_ADMIN: User(
+                email="pacs_admin@example.local",
+                display_name="pacs_admin",
+                password_hash="not-used",
+                role=Role.PACS_ADMIN,
+            )
+        }
+        session.add_all(users.values())
+        report = _seed_report(session)
+        session.commit()
+
+    _override(engine, users[Role.PACS_ADMIN])
+    try:
+        client = TestClient(app)
+
+        delivered = client.post(
+            "/api/v1/imaging/mock-ehr/receive",
+            params={"report_id": str(report.id)},
+        )
+        assert delivered.status_code == 201
+        receipt = delivered.json()
+        assert receipt["accepted"] is True
+        assert receipt["receiver"] == "mock-ehr"
+        assert receipt["resource_type"] == "DiagnosticReport"
+        assert receipt["report_id"] == str(report.id)
+        receipt_id = receipt["id"]
+
+        # The inbox lists the delivery with bounded metadata.
+        inbox = client.get("/api/v1/imaging/mock-ehr/inbox")
+        assert inbox.status_code == 200
+        rows = inbox.json()["items"]
+        assert len(rows) == 1
+        assert rows[0]["id"] == receipt_id
+        assert rows[0]["report_id"] == str(report.id)
+        # Full report text is not re-exposed through the inbox listing.
+        assert "findings" not in rows[0]
+
+        # Duplicate delivery of the same report is a deterministic conflict.
+        duplicate = client.post(
+            "/api/v1/imaging/mock-ehr/receive",
+            params={"report_id": str(report.id)},
+        )
+        assert duplicate.status_code == 409
+
+        # Non-finalized reports cannot be delivered.
+        from app.imaging.models import RadiologyReport as _RR
+        from app.imaging.models import ReportStatus as _RS
+
+        with Session(engine) as s:
+            row = s.get(_RR, report.id)
+            assert row is not None
+            row.status = _RS.CORRECTION_PENDING
+            s.commit()
+        pending = client.post(
+            "/api/v1/imaging/mock-ehr/receive",
+            params={"report_id": str(report.id)},
+        )
+        assert pending.status_code == 409
+
+        # Delivery was audited.
+        with Session(engine) as s:
+            actions = set(
+                s.scalars(
+                    select(AuditEvent.action).where(AuditEvent.entity_type == "mock_ehr_delivery")
+                )
+            )
+            assert "imaging.mock_ehr.received" in actions
     finally:
         app.dependency_overrides.clear()

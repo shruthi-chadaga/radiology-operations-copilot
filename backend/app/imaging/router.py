@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import case, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit.service import AuditActor, append_audit_event
@@ -71,7 +72,7 @@ from app.imaging.viewer import find_prior_studies, first_instance_id, is_synthet
 from app.imaging.worklist_service import list_modality_worklist
 from app.pacs.adapter import PacsAdapter
 from app.pacs.dependencies import get_pacs_adapters
-from app.pacs.models import PacsNode, PacsStudy
+from app.pacs.models import MockEhrDelivery, PacsNode, PacsStudy
 from app.scheduling.models import SyntheticPatient
 
 router = APIRouter(prefix="/imaging", tags=["imaging-workspace"])
@@ -683,6 +684,116 @@ def discontinue_procedure_step(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     db.commit()
     return step
+
+
+@router.post("/mock-ehr/receive", status_code=status.HTTP_201_CREATED)
+def mock_ehr_receive(
+    report_id: uuid.UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    """Deliver a finalized report to the local mock EHR (no external calls).
+
+    Stores delivery evidence only; the FHIR resource is generated on demand
+    and never persisted here. One delivery per report.
+    """
+    _authorize(user, write=True)
+    report = db.get(RadiologyReport, report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if report.status != ReportStatus.FINALIZED:
+        raise HTTPException(
+            status_code=409,
+            detail="Only a finalized report can be delivered",
+        )
+    existing = db.scalar(select(MockEhrDelivery).where(MockEhrDelivery.report_id == report.id))
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This report has already been delivered to the mock EHR",
+        )
+    if report.current_version_number is None:
+        raise HTTPException(status_code=409, detail="Report has no version to deliver")
+    delivery = MockEhrDelivery(
+        report_id=report.id,
+        study_id=report.study_id,
+        receiver="mock-ehr",
+        resource_type="DiagnosticReport",
+        status="received",
+        version_number=report.current_version_number,
+        received_by=str(user.id),
+    )
+    db.add(delivery)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="This report has already been delivered to the mock EHR",
+        ) from exc
+    append_audit_event(
+        db,
+        actor=AuditActor("user", str(user.id)),
+        action="imaging.mock_ehr.received",
+        entity_type="mock_ehr_delivery",
+        entity_id=str(delivery.id),
+        decision_reason=(
+            "Finalized report handed to the local mock EHR receiver "
+            "(demonstration only; no external system contacted)"
+        ),
+        correlation_id=f"report-{report.id}",
+        request_id=f"report-{report.id}",
+        success=True,
+        after_state={
+            "report_id": str(report.id),
+            "version": report.current_version_number,
+            "receiver": "mock-ehr",
+            "external": False,
+        },
+    )
+    db.commit()
+    return {
+        "id": str(delivery.id),
+        "accepted": True,
+        "receiver": "mock-ehr",
+        "resource_type": "DiagnosticReport",
+        "report_id": str(report.id),
+        "version_number": delivery.version_number,
+        "received_at": delivery.received_at.isoformat(),
+    }
+
+
+@router.get("/mock-ehr/inbox")
+def mock_ehr_inbox(
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    """Bounded listing of mock-EHR deliveries; no report content is exposed."""
+    _authorize(user)
+    deliveries = list(
+        db.scalars(
+            select(MockEhrDelivery)
+            .order_by(MockEhrDelivery.received_at.desc(), MockEhrDelivery.id)
+            .limit(200)
+        )
+    )
+    return {
+        "resource_type": "mock_ehr_inbox",
+        "items": [
+            {
+                "id": str(delivery.id),
+                "report_id": str(delivery.report_id),
+                "study_id": str(delivery.study_id),
+                "receiver": delivery.receiver,
+                "resource_type": delivery.resource_type,
+                "status": delivery.status,
+                "version_number": delivery.version_number,
+                "received_by": delivery.received_by,
+                "received_at": delivery.received_at.isoformat(),
+            }
+            for delivery in deliveries
+        ],
+    }
 
 
 @router.post("/reports/shares/{share_id}/email", response_model=ShareResponse)
