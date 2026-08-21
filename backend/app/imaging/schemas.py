@@ -137,3 +137,43 @@ class ReportResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     versions: list[ReportVersionResponse]
+
+
+class ShareCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recipient_label: str = Field(min_length=1, max_length=120)
+    expires_in_hours: int = Field(ge=1, le=336)
+
+    @field_validator("recipient_label")
+    @classmethod
+    def recipient_label_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("recipient label must not be blank")
+        return value.strip()
+
+
+class ShareResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    report_id: str
+    study_id: str
+    recipient_label: str
+    status: str
+    created_by: str
+    created_at: datetime
+    expires_at: datetime
+    revoked_at: datetime | None
+
+
+class ShareCreatedResponse(ShareResponse):
+    """Creation response; the raw token is returned exactly once, never stored."""
+
+    token: str
+
+
+class SharePage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ShareResponse]

@@ -16,6 +16,8 @@ from app.imaging.models import (
     ImagingPriority,
     ImagingWorklistItem,
     RadiologyReport,
+    RadiologyReportShare,
+    RadiologyReportShareStatus,
     RadiologyReportVersion,
 )
 from app.imaging.reporting import (
@@ -35,10 +37,20 @@ from app.imaging.schemas import (
     ReportFinalizeRequest,
     ReportResponse,
     ReportVersionResponse,
+    ShareCreatedResponse,
+    ShareCreateRequest,
+    SharePage,
+    ShareResponse,
     ViewerComparisonResponse,
     ViewerStudyResponse,
 )
 from app.imaging.service import build_timeline, synchronize_worklist
+from app.imaging.sharing import (
+    ShareWorkflowError,
+    create_share,
+    list_shares,
+    revoke_share,
+)
 from app.imaging.viewer import find_prior_studies, first_instance_id, is_synthetic_study
 from app.pacs.adapter import PacsAdapter
 from app.pacs.dependencies import get_pacs_adapters
@@ -422,3 +434,126 @@ def correct_study_report(
     db.commit()
     db.refresh(report)
     return _report_response(db, report)
+
+
+def _share_response(share: RadiologyReportShare) -> ShareResponse:
+    status_value = (
+        share.status
+        if isinstance(share.status, RadiologyReportShareStatus)
+        else RadiologyReportShareStatus(share.status)
+    )
+    return ShareResponse(
+        id=str(share.id),
+        report_id=str(share.report_id),
+        study_id=str(share.study_id),
+        recipient_label=share.recipient_label,
+        status=status_value.value,
+        created_by=share.created_by,
+        created_at=share.created_at,
+        expires_at=share.expires_at,
+        revoked_at=share.revoked_at,
+    )
+
+
+def _audit_share(
+    db: Session,
+    user: User,
+    *,
+    action: str,
+    share: RadiologyReportShare,
+    reason: str,
+    extra_state: dict[str, str] | None = None,
+) -> None:
+    after_state = {
+        "report_id": str(share.report_id),
+        "recipient_label": share.recipient_label,
+        "status": share.status.value,
+        "expires_at": share.expires_at.isoformat(),
+        "raw_token_stored": False,
+    }
+    if extra_state:
+        after_state.update(extra_state)
+    append_audit_event(
+        db,
+        actor=AuditActor("user", str(user.id)),
+        action=action,
+        entity_type="radiology_report_share",
+        entity_id=str(share.id),
+        decision_reason=reason,
+        correlation_id=f"share-{share.id}",
+        request_id=f"share-{share.id}",
+        success=True,
+        after_state=after_state,
+    )
+
+
+@router.post(
+    "/reports/{report_id}/shares",
+    response_model=ShareCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_report_share(
+    report_id: uuid.UUID,
+    payload: ShareCreateRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ShareCreatedResponse:
+    _authorize_reporter(user)
+    try:
+        share, raw_token = create_share(
+            db,
+            report_id=report_id,
+            created_by=str(user.id),
+            recipient_label=payload.recipient_label,
+            expires_in_hours=payload.expires_in_hours,
+        )
+    except ShareWorkflowError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    _audit_share(
+        db,
+        user,
+        action="imaging.share.created",
+        share=share,
+        reason="User allowlisted a recipient for the finalized report",
+    )
+    db.commit()
+    db.refresh(share)
+    response = ShareCreatedResponse(
+        **_share_response(share).model_dump(),
+        token=raw_token,
+    )
+    return response
+
+
+@router.get("/reports/{report_id}/shares", response_model=SharePage)
+def list_report_shares(
+    report_id: uuid.UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> SharePage:
+    _authorize(user)
+    shares = list_shares(db, report_id=report_id)
+    return SharePage(items=[_share_response(share) for share in shares])
+
+
+@router.delete("/reports/shares/{share_id}", response_model=ShareResponse)
+def revoke_report_share(
+    share_id: uuid.UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ShareResponse:
+    _authorize(user, write=True)
+    try:
+        share = revoke_share(db, share_id=share_id, revoked_by=str(user.id))
+    except ShareWorkflowError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    _audit_share(
+        db,
+        user,
+        action="imaging.share.revoked",
+        share=share,
+        reason="User revoked the share allowlist entry",
+    )
+    db.commit()
+    db.refresh(share)
+    return _share_response(share)
