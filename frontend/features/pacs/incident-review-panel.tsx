@@ -189,10 +189,11 @@ export function IncidentReviewPanel() {
       const result = (await response.json()) as {
         selected: number;
         completed: number;
+        deferred: number;
         failed: number;
       };
       setMessage(
-        `Evidence recovery: ${result.completed}/${result.selected} completed; ${result.failed} failed. No remediation was executed.`,
+        `Evidence recovery: ${result.completed}/${result.selected} completed; ${result.deferred} deferred; ${result.failed} failed. No remediation was executed.`,
       );
       await loadIncidents();
     } catch {

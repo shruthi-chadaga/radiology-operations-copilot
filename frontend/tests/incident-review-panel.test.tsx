@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 
@@ -222,5 +222,90 @@ describe("incident review panel strict schemas", () => {
       await screen.findByText("No open incidents require review."),
     ).toBeInTheDocument();
     expect((global.fetch as Mock).mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("records an approval decision with the entered reason and refreshes", async () => {
+    const postCalls: Array<{ url: string; body: unknown }> = [];
+    global.fetch = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/v1/auth/me")) {
+          return jsonResponse({
+            id: "user-sa",
+            email: "sa@example.local",
+            display_name: "Synthetic SA",
+            role: "system_admin",
+          });
+        }
+        if (
+          url.endsWith("/api/v1/incidents") &&
+          (!init?.method || init.method === "GET")
+        ) {
+          return jsonResponse({ items: [makeIncident([pendingProposal])] });
+        }
+        if (
+          url.endsWith("/api/v1/incidents/proposals/proposal-1/approve") &&
+          init?.method === "POST"
+        ) {
+          postCalls.push({ url, body: JSON.parse(String(init.body)) });
+          return jsonResponse({ status: "approved" });
+        }
+        throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+      },
+    ) as unknown as typeof fetch;
+
+    const promptSpy = vi
+      .spyOn(window, "prompt")
+      .mockReturnValue("Synthetic fresh health evidence");
+    try {
+      renderPanel();
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Approve evidence" }),
+      );
+      await screen.findByText(
+        /Approval recorded\. Execution remains disabled in this slice\./,
+      );
+      expect(postCalls).toHaveLength(1);
+      expect(postCalls[0].body).toEqual({
+        decision_reason: "Synthetic fresh health evidence",
+      });
+    } finally {
+      promptSpy.mockRestore();
+    }
+  });
+
+  it("does not POST a decision when the reason prompt is cancelled or blank", async () => {
+    let approveCalls = 0;
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/auth/me")) {
+        return jsonResponse({
+          id: "user-sa",
+          email: "sa@example.local",
+          display_name: "Synthetic SA",
+          role: "system_admin",
+        });
+      }
+      if (url.endsWith("/api/v1/incidents")) {
+        return jsonResponse({ items: [makeIncident([pendingProposal])] });
+      }
+      if (url.endsWith("/api/v1/incidents/proposals/proposal-1/approve")) {
+        approveCalls += 1;
+        return jsonResponse({ status: "approved" });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }) as unknown as typeof fetch;
+
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("   ");
+    try {
+      renderPanel();
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Approve evidence" }),
+      );
+      expect(approveCalls).toBe(0);
+      expect((global.fetch as Mock).mock.calls.length).toBeGreaterThan(0);
+    } finally {
+      promptSpy.mockRestore();
+    }
   });
 });
