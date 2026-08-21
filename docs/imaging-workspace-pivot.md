@@ -105,6 +105,15 @@ This product still does not interpret images, diagnose, measure anatomy, modify 
 
 Allowlisted sharing, expiring token links with MailHog email delivery and rotation, and a mock FHIR `DiagnosticReport` export are implemented. Remaining optional additions: print/PDF rendering and an EHR-shaped mock receiver. Every delivery destination is explicit, audited, and revocable.
 
-### Phase E — Acquisition and interoperability
+### Phase E — Acquisition and interoperability: core surfaces delivered
+
+The first standards-shaped integration surfaces are implemented, all read-only or lifecycle-evidence only, with no network DICOM protocol and no external calls:
+
+- **Modality Worklist (MWL C-FIND equivalent)** — `GET /api/v1/imaging/modality-worklist` projects booked/confirmed, not-yet-acquired orders into standards-shaped entries (DICOM patient name/birth-date conventions, procedure codes) within a bounded look-ahead window. Write-role gated.
+- **DICOMweb QIDO-RS-style study query** — `GET /api/v1/imaging/dicom/studies?Modality=&PatientID=&AccessionNumber=&StudyDate=` over the synthetic PACS inventory using real DICOM attribute tags (`0020000D`, `00080050`, `00100020`, …). Read-role gated, metadata-only.
+- **MPPS-lite procedure steps** — start/complete/discontinue lifecycle per accession (`POST /imaging/procedure-steps/{accession}/start`, `/{step_id}/complete`, `/{step_id}/discontinue`, `GET /imaging/procedure-steps`). Append-only lifecycle evidence with deterministic conflicts (double-start/double-complete/discontinue-after-end all 409), bounded series counts, unknown accessions 404, and every transition audited.
+- Real wire-level DICOM associations (C-STORE/C-FIND over the network), MPPS as a service class, and sandboxed EHR adapters remain future work; current surfaces intentionally serve the same shapes from PostgreSQL so workflow can be validated before any protocol integration.
+
+### Phase E — Acquisition and interoperability (wire protocols)
 
 Add real modality receiver standards only after the product workflow is validated: DICOM C-STORE, Modality Worklist, MPPS, DICOMweb, and a mocked or sandboxed EHR adapter. Keep all external integrations behind typed adapters and synthetic-only test fixtures.
