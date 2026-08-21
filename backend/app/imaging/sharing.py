@@ -17,6 +17,7 @@ from app.imaging.models import (
     RadiologyReport,
     RadiologyReportShare,
     RadiologyReportShareStatus,
+    RadiologyReportVersion,
     ReportStatus,
 )
 
@@ -134,11 +135,51 @@ def resolve_active_share(session: Session, *, raw_token: str) -> RadiologyReport
     )
     if share is None:
         return None
-    if share.status != RadiologyReportShareStatus.ACTIVE:
+    current_status = (
+        share.status
+        if isinstance(share.status, RadiologyReportShareStatus)
+        else RadiologyReportShareStatus(share.status)
+    )
+    if current_status != RadiologyReportShareStatus.ACTIVE:
         return None
     expires_at = share.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
     if expires_at <= datetime.now(UTC):
         return None
+    report = session.get(RadiologyReport, share.report_id)
+    if report is None or report.status != ReportStatus.FINALIZED:
+        # A non-finalized (e.g. correction pending) report is not shared.
+        return None
     return share
+
+
+def shared_report_payload(session: Session, share: RadiologyReportShare) -> dict[str, str]:
+    """Bounded recipient-facing payload; no patient identifiers beyond the label."""
+    report = session.get(RadiologyReport, share.report_id)
+    versions = list(
+        session.scalars(
+            select(RadiologyReportVersion)
+            .where(RadiologyReportVersion.report_id == share.report_id)
+            .order_by(RadiologyReportVersion.version_number)
+        )
+    )
+    current_version_number = report.current_version_number if report is not None else None
+    current = next(
+        (
+            version
+            for version in reversed(versions)
+            if version.version_number == current_version_number
+        ),
+        None,
+    )
+    return {
+        "report_id": str(share.report_id),
+        "recipient_label": share.recipient_label,
+        "status": ReportStatus.FINALIZED.value,
+        "version": str(current_version_number or ""),
+        "indication": current.indication if current else "",
+        "findings": current.findings if current else "",
+        "impression": current.impression if current else "",
+        "expires_at": share.expires_at.isoformat(),
+    }

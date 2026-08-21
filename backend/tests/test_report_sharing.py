@@ -134,7 +134,10 @@ from app.auth.models import Role, User  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.imaging.models import (  # noqa: E402
     RadiologyReport,
+    RadiologyReportShare,
+    RadiologyReportVersion,
     ReportStatus,
+    ReportVersionKind,
 )
 from app.main import app  # noqa: E402
 from app.pacs.models import PacsStudy  # noqa: E402
@@ -175,6 +178,17 @@ def _seed_report(session: Session) -> RadiologyReport:
         finalized_by="user-pacs-admin",
     )
     session.add(report)
+    session.flush()
+    version = RadiologyReportVersion(
+        report_id=report.id,
+        version_number=1,
+        kind=ReportVersionKind.FINAL,
+        author_id="user-pacs-admin",
+        indication="Synthetic follow-up indication",
+        findings="Synthetic findings text for sharing verification",
+        impression="Synthetic impression text",
+    )
+    session.add(version)
     session.flush()
     return report
 
@@ -300,3 +314,127 @@ def test_share_lifecycle_create_list_revoke_with_audit() -> None:
                 }
             )
             assert payload["token"] not in blob
+
+
+def test_share_resolution_enforces_expiry_revocation_and_finalized_state() -> None:
+    import_full_metadata()
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        users = {
+            role: User(
+                email=f"{role.value}@example.local",
+                display_name=role.value,
+                password_hash="not-used",
+                role=role,
+            )
+            for role in (Role.PACS_ADMIN,)
+        }
+        session.add_all(users.values())
+        report = _seed_report(session)
+        session.commit()
+
+    _override_env(engine, users[Role.PACS_ADMIN])
+    tokens: dict[str, str] = {}
+    try:
+        client = TestClient(app)
+
+        # Active share (48h window).
+        created = client.post(
+            f"/api/v1/imaging/reports/{report.id}/shares",
+            json={"recipient_label": "Recipient A", "expires_in_hours": 48},
+        ).json()
+        tokens["active"] = created["token"]
+
+        # Expiring share: create with 1 hour, then force expiry via direct DB
+        # update (deterministic; no sleeping).
+        expiring = client.post(
+            f"/api/v1/imaging/reports/{report.id}/shares",
+            json={"recipient_label": "Recipient B", "expires_in_hours": 1},
+        ).json()
+        tokens["expired"] = expiring["token"]
+        with Session(engine) as s:
+            row = s.get(RadiologyReportShare, uuid.UUID(expiring["id"]))
+            assert row is not None
+            row.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+            s.commit()
+
+        # Revoked share.
+        revoked = client.post(
+            f"/api/v1/imaging/reports/{report.id}/shares",
+            json={"recipient_label": "Recipient C", "expires_in_hours": 24},
+        ).json()
+        tokens["revoked"] = revoked["token"]
+        assert client.delete(f"/api/v1/imaging/reports/shares/{revoked['id']}").status_code == 200
+
+        def resolve(token: str):  # type: ignore[no-untyped-def]
+            return client.post("/api/v1/imaging/shares/resolve", json={"token": token})
+
+        good = resolve(tokens["active"])
+        assert good.status_code == 200
+        body = good.json()
+        assert body["recipient_label"] == "Recipient A"
+        assert body["status"] == "finalized"
+        assert body["findings"], "bounded payload should include authored text"
+
+        # Expired, revoked, and unknown tokens are indistinguishable: all 403,
+        # identical detail, no oracle about which check failed.
+        for case in ("expired", "revoked"):
+            response = resolve(tokens[case])
+            assert response.status_code == 403, case
+            assert response.json()["detail"] == "Share link is not valid"
+        unknown = resolve("x" * 64)
+        assert unknown.status_code == 403
+        assert unknown.json()["detail"] == "Share link is not valid"
+
+        # Empty/short token fails strict schema validation, same as missing.
+        assert (
+            client.post("/api/v1/imaging/shares/resolve", json={"token": "short"}).status_code
+            == 422
+        )
+
+        # The bounded payload never leaks patient identifiers or study metadata.
+        leaked_fields = {"patient", "accession_number", "study_instance_uid"}
+        assert leaked_fields.isdisjoint(body.keys())
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_resolution_fails_closed_when_report_leaves_finalized_state() -> None:
+    import_full_metadata()
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        users = {
+            Role.PACS_ADMIN: User(
+                email="pacs_admin@example.local",
+                display_name="pacs_admin",
+                password_hash="not-used",
+                role=Role.PACS_ADMIN,
+            )
+        }
+        session.add_all(users.values())
+        report = _seed_report(session)
+        session.commit()
+
+    _override_env(engine, users[Role.PACS_ADMIN])
+    try:
+        client = TestClient(app)
+        created = client.post(
+            f"/api/v1/imaging/reports/{report.id}/shares",
+            json={"recipient_label": "Clinic follow-up", "expires_in_hours": 12},
+        ).json()
+
+        # Report leaves finalized state -> share must stop resolving even
+        # while the allowlist entry itself remains active and unexpired.
+        with Session(engine) as s:
+            row = s.get(RadiologyReport, report.id)
+            assert row is not None
+            row.status = ReportStatus.CORRECTION_PENDING
+            s.commit()
+
+        response = client.post("/api/v1/imaging/shares/resolve", json={"token": created["token"]})
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Share link is not valid"
+    finally:
+        app.dependency_overrides.clear()

@@ -177,3 +177,24 @@ class SharePage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[ShareResponse]
+
+
+class ShareResolveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=16, max_length=256)
+
+
+class SharedReportResponse(BaseModel):
+    """Bounded recipient-facing view; no patient identifiers or study metadata."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    report_id: str
+    recipient_label: str
+    status: str
+    version: str
+    indication: str
+    findings: str
+    impression: str
+    expires_at: str

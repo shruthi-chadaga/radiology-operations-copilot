@@ -39,7 +39,9 @@ from app.imaging.schemas import (
     ReportVersionResponse,
     ShareCreatedResponse,
     ShareCreateRequest,
+    SharedReportResponse,
     SharePage,
+    ShareResolveRequest,
     ShareResponse,
     ViewerComparisonResponse,
     ViewerStudyResponse,
@@ -49,7 +51,9 @@ from app.imaging.sharing import (
     ShareWorkflowError,
     create_share,
     list_shares,
+    resolve_active_share,
     revoke_share,
+    shared_report_payload,
 )
 from app.imaging.viewer import find_prior_studies, first_instance_id, is_synthetic_study
 from app.pacs.adapter import PacsAdapter
@@ -557,3 +561,23 @@ def revoke_report_share(
     db.commit()
     db.refresh(share)
     return _share_response(share)
+
+
+@router.post("/shares/resolve", response_model=SharedReportResponse)
+def resolve_shared_report(
+    payload: ShareResolveRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> SharedReportResponse:
+    """Token-authenticated recipient view; the token itself is the credential.
+
+    Invalid, expired, and revoked tokens return an identical 403 so callers
+    cannot distinguish between them.
+    """
+    share = resolve_active_share(db, raw_token=payload.token)
+    if share is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Share link is not valid",
+        )
+    bounded = shared_report_payload(db, share)
+    return SharedReportResponse(**bounded)
