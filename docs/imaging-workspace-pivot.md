@@ -103,7 +103,7 @@ This product still does not interpret images, diagnose, measure anatomy, modify 
 
 ### Phase D — Share and export: complete
 
-Allowlisted sharing, expiring token links with MailHog email delivery and rotation, and a mock FHIR `DiagnosticReport` export are implemented. Remaining optional additions: print/PDF rendering and an EHR-shaped mock receiver. Every delivery destination is explicit, audited, and revocable.
+Allowlisted sharing, expiring token links with MailHog email delivery and rotation, a mock FHIR `DiagnosticReport` export, print/PDF rendering (`GET /api/v1/imaging/reports/{report_id}/print`, watermark-disclaimed, audited), and an EHR-shaped mock receiver (`POST /api/v1/imaging/mock-ehr/receive` + `/inbox`, one delivery per report, metadata-only evidence) are implemented. Every delivery destination is explicit, audited, and revocable where applicable.
 
 ### Phase E — Acquisition and interoperability: core surfaces delivered
 
