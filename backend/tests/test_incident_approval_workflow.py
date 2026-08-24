@@ -154,7 +154,7 @@ def override_database(engine):
 
 def test_supersession_migration_revision_and_constraint_contract() -> None:
     migration_path = (
-        Path(__file__).parents[1] / "alembic" / "versions" / "0017_incident_proposal_superseded.py"
+        Path(__file__).parents[1] / "alembic" / "versions" / "0017_supersede_proposals.py"
     )
     spec = importlib.util.spec_from_file_location("incident_proposal_superseded", migration_path)
     assert spec is not None
@@ -162,7 +162,7 @@ def test_supersession_migration_revision_and_constraint_contract() -> None:
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
 
-    assert migration.revision == "0017_incident_proposal_superseded"
+    assert migration.revision == "0017_supersede_proposals"
     assert migration.down_revision == "0016_incident_approval_controls"
     status_constraint = next(
         constraint

@@ -47,7 +47,7 @@ def import_full_metadata() -> None:
 def test_migration_revision_chain_and_contract() -> None:
     migration = _load_migration()
     assert migration.revision == "0018_report_share_allowlist"
-    assert migration.down_revision == "0017_incident_proposal_superseded"
+    assert migration.down_revision == "0017_supersede_proposals"
 
 
 def test_share_record_persists_with_expiry_revocation_and_audit_link() -> None:

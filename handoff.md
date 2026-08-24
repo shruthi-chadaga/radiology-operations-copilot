@@ -62,7 +62,7 @@ Scheduling Automation remains first-class at `/scheduling`. The incident-review 
 
 - Full backend suite: **161 passed** (Ruff, mypy, and formatting clean).
 - Frontend: **33 tests passed**, typecheck, lint, Prettier, and production build clean.
-- Alembic head: `0017_incident_proposal_superseded` (single head).
+- Alembic head: `0020_mock_ehr_deliveries` (single head; `0017` revision ID shortened to fit Alembic's 32-char `version_num` column).
 - Fresh PostgreSQL database upgraded through the full migration chain; connected synthetic Orthanc smoke and an authenticated browser smoke test against the live Compose stack passed.
 - Scheduling fixtures were converted to clock-relative dates, so the full suite no longer depends on the calendar.
 
