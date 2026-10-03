@@ -26,3 +26,6 @@ Thumbs.db
 
 # Generated synthetic DICOM (fixtures may be explicitly force-added later)
 synthetic-data/dicom/generated/
+
+# Generated launch-video artifacts (brag render products, not source)
+brag-output*/
